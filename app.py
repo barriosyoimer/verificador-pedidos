@@ -386,6 +386,11 @@ elif opcion == "Ver Reportes":
                     c_usd, c_und, c_art = None, None, None
                     for col in df_tmp.columns[1:]:
                         c_lower = str(col).lower()
+                        
+                        # --- SEGURO: Ignorar porcentajes para no dañar los totales ---
+                        if '%' in c_lower or 'part' in c_lower:
+                            continue
+                            
                         if 'compra' in c_lower or 'dolar' in c_lower or '$' in c_lower: c_usd = col
                         elif 'unid' in c_lower: c_und = col
                         elif 'art' in c_lower or 'cant' in c_lower or 'pedir' in c_lower: c_art = col
@@ -407,6 +412,7 @@ elif opcion == "Ver Reportes":
                         if isinstance(x, str): return x.replace('.', '').replace(',', '.')
                         return x
 
+                    # 3. Asegurar formatos numéricos
                     for req in ["Total Compra", "Total Unidades", "Total Artículos"]:
                         if req not in df_tmp.columns:
                             if req == "Total Artículos" and "Total Unidades" in df_tmp.columns:
