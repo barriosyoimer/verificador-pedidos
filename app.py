@@ -351,7 +351,20 @@ elif opcion == "Ver Reportes":
         labs_sistema = obtener_laboratorios(solo_visibles=False)
 
         if labs_sistema:
-            lab_seleccionado = st.selectbox("Seleccione el Laboratorio a evaluar en tiempo real:", labs_sistema)
+            # Intercepta el laboratorio desde la URL del navegador para que no se borre con F5
+            lab_guardado = st.query_params.get("lab", labs_sistema[0] if labs_sistema else "")
+            try:
+                idx_lab = labs_sistema.index(lab_guardado)
+            except:
+                idx_lab = 0
+
+            lab_seleccionado = st.selectbox(
+                "Seleccione el Laboratorio a evaluar en tiempo real:", 
+                labs_sistema,
+                index=idx_lab
+            )
+            # Guarda la elección actual en el navegador
+            st.query_params["lab"] = lab_seleccionado
             
             # Filtro blindado: asegura una coincidencia exacta y limpia
             lab_limpio = str(lab_seleccionado).strip().upper()
@@ -382,12 +395,12 @@ elif opcion == "Ver Reportes":
             for r in reportes_filtrados:
                 df_tmp = pd.DataFrame(r["datos_cuadro"])
                 if not df_tmp.empty:
-                    # 1. Identificar columnas dinámicamente
+                    # 1. Identificar columnas dinámicamente evitando confusiones
                     c_usd, c_und, c_art = None, None, None
                     for col in df_tmp.columns[1:]:
                         c_lower = str(col).lower()
                         
-                        # --- SEGURO: Ignorar porcentajes para no dañar los totales ---
+                        # FILTRO PROTECTOR: Si la columna es de porcentaje, la saltamos
                         if '%' in c_lower or 'part' in c_lower:
                             continue
                             
