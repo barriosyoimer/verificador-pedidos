@@ -231,7 +231,7 @@ if opcion == "Cargar Excel":
 
                 df_tabla['% Part. Dólares'] = (df_tabla["Total Compra"] / suma_real_dolares * 100) if suma_real_dolares > 0 else 0
                 df_tabla['% Part. Unidades'] = (df_tabla["Total Unidades"] / suma_real_unidades * 100) if suma_real_unidades > 0 else 0
-
+                
                 for col in ["Total Artículos", "Total Unidades"]:
                     df_tabla[col] = np.floor(df_tabla[col] + 0.5).astype(int)
 
@@ -432,7 +432,6 @@ elif opcion == "Ver Reportes":
 
                 df_consolidado['% Part. Dólares'] = (df_consolidado["Total Compra"] / total_usd_global * 100) if total_usd_global > 0 else 0
                 df_consolidado['% Part. Unidades'] = (df_consolidado["Total Unidades"] / total_und_global * 100) if total_und_global > 0 else 0
-
                 columnas_finales_global = [c for c in ORDEN_COLUMNAS if c in df_consolidado.columns]
                 df_consolidado = df_consolidado[columnas_finales_global]
 
@@ -545,7 +544,7 @@ elif opcion == "Consolidado Total":
                 st.markdown("### ➕ Detalle de Compras (Laboratorios por Sede)")
                 
                 for idx, row in df_sedes.iterrows():
-                    sede_nombre = row["Droguería"]
+                    sede_nombre = row["Sede"]
                     compra_sede = row["Total Compra"]
                     und_sede = row["Total Unidades"]
                     
@@ -560,7 +559,6 @@ elif opcion == "Consolidado Total":
                         # Calculamos la participación en base al total local de la SEDE
                         df_filtro_sede['% Part. Dólares'] = (df_filtro_sede["Total Compra"] / compra_sede * 100) if compra_sede > 0 else 0
                         df_filtro_sede['% Part. Unidades'] = (df_filtro_sede["Total Unidades"] / und_sede * 100) if und_sede > 0 else 0
-                        
                         # Ordenamos quién se llevó la mayor compra
                         df_filtro_sede = df_filtro_sede.sort_values(by="Total Compra", ascending=False)
                         
