@@ -395,49 +395,26 @@ elif opcion == "Ver Reportes":
             for r in reportes_filtrados:
                 df_tmp = pd.DataFrame(r["datos_cuadro"])
                 if not df_tmp.empty:
-                    # 1. Identificar columnas dinámicamente evitando confusiones
-                    c_usd, c_und, c_art = None, None, None
-                    for col in df_tmp.columns[1:]:
-                        c_lower = str(col).lower()
-                        
-                        # FILTRO PROTECTOR: Si la columna es de porcentaje, la saltamos
-                        if '%' in c_lower or 'part' in c_lower:
-                            continue
-                            
-                        if 'compra' in c_lower or 'dolar' in c_lower or '$' in c_lower: c_usd = col
-                        elif 'unid' in c_lower: c_und = col
-                        elif 'art' in c_lower or 'cant' in c_lower or 'pedir' in c_lower: c_art = col
+                    # 1. Como los datos ya vienen limpios y perfectos de "Cargar Excel", 
+                    # solo validamos que no falte la columna principal por si es un registro viejo
+                    if "Droguería" not in df_tmp.columns:
+                        df_tmp.rename(columns={df_tmp.columns[0]: "Droguería"}, inplace=True)
 
-                    if c_usd is None and len(df_tmp.columns) > 1: c_usd = df_tmp.columns[1]
-                    if c_und is None and len(df_tmp.columns) > 2: c_und = df_tmp.columns[-1]
-
-                    # 2. Renombrar con seguro anti-duplicados
-                    rename_dict = {df_tmp.columns[0]: "Droguería"}
-                    if c_usd: rename_dict[c_usd] = "Total Compra"
-                    if c_art and c_art != c_usd: rename_dict[c_art] = "Total Artículos"
-                    if c_und and c_und != c_usd and c_und != c_art: rename_dict[c_und] = "Total Unidades"
-                    elif c_und and c_und == c_art: rename_dict[c_und] = "Total Unidades"
-                    
-                    df_tmp.rename(columns=rename_dict, inplace=True)
-                    df_tmp = df_tmp.loc[:, ~df_tmp.columns.duplicated(keep='last')]
-                    
                     def limpiar_numero_tmp(x):
                         if isinstance(x, str): return x.replace('.', '').replace(',', '.')
                         return x
 
-                    # 3. Asegurar formatos numéricos
-                    for req in ["Total Compra", "Total Unidades", "Total Artículos"]:
+                    # 2. Aseguramos que las 3 columnas maestras sean números sin duplicar nada
+                    for req in ["Total Compra", "Total Artículos", "Total Unidades"]:
                         if req not in df_tmp.columns:
-                            if req == "Total Artículos" and "Total Unidades" in df_tmp.columns:
-                                df_tmp[req] = df_tmp["Total Unidades"]
-                            elif req == "Total Unidades" and "Total Artículos" in df_tmp.columns:
-                                df_tmp[req] = df_tmp["Total Artículos"]
-                            else:
-                                df_tmp[req] = 0
+                            df_tmp[req] = 0
                         df_tmp[req] = pd.to_numeric(df_tmp[req].apply(limpiar_numero_tmp), errors='coerce').fillna(0)
                         
+                    # 3. Forzamos estrictamente el orden oficial de las 6 columnas
                     cols_to_keep = [c for c in ORDEN_COLUMNAS if c in df_tmp.columns]
                     df_tmp = df_tmp[cols_to_keep]
+                    
+                    # Guardamos la tabla para sumarla
                     tablas_sedes_limpias.append(df_tmp)
             
             if tablas_sedes_limpias:
