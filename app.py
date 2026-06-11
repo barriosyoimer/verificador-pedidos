@@ -284,7 +284,7 @@ if opcion == "Cargar Excel":
                             with st.spinner("Sincronizando..."):    
                                 detalles_cuadro = df_tabla.to_dict(orient="records")
                                 payload = {
-                                    "sede": st.session_state.sede_seleccionada,
+                                    "sede": sede_input,  
                                     "laboratorio": laboratorio_input,
                                     "total_dolares": float(suma_real_dolares),
                                     "total_unidades": int(round(suma_real_unidades)),
@@ -292,7 +292,7 @@ if opcion == "Cargar Excel":
                                     "datos_cuadro": detalles_cuadro
                                 }
                                 db.collection("reportes_comparador").document(doc_id_verificar).set(payload)
-                                st.success(f"🚀 ¡Estructura de {st.session_state.sede_seleccionada} sincronizada con éxito!")
+                                st.success(f"🚀 ¡Estructura de {sede_input} sincronizada con éxito!")
                                 time.sleep(1)
                                 
                                 st.session_state.uploader_key += 1
@@ -301,10 +301,13 @@ if opcion == "Cargar Excel":
             except Exception as e:
                 st.error(f"Error al procesar archivo: {e}")
 
-# ==========================================
-# VISTA: VER REPORTES
-# ==========================================
+
 elif opcion == "Ver Reportes":
+    
+    # Gatillo infalible para borrar antes de recargar la interfaz
+    def ejecutar_borrado(id_doc):
+        db.collection("reportes_comparador").document(id_doc).delete()
+
     st.header("📊 Panel de Visualización Histórica")
     
     with st.expander("⚙️ Panel de Administración de Laboratorios"):
@@ -459,12 +462,8 @@ elif opcion == "Ver Reportes":
                         with col_acc1:
                             st.write(f"**Registrado el:** {r['fecha_registro']}")
                         with col_acc2:
-                            id_borrar = f"{r['sede'].lower().replace(' ', '_')}_{r['laboratorio'].lower().replace(' ', '_')}"
-                            if st.button("🗑️ Eliminar datos", key=f"del_{id_borrar}", type="secondary"):
-                                db.collection("reportes_comparador").document(id_borrar).delete()
-                                st.warning(f"Datos de {r['sede']} eliminados.")
-                                time.sleep(0.5)
-                                st.rerun()
+                            id_borrar = r["id_real_fb"]
+                            st.button("🗑️ Eliminar", key=f"del_{id_borrar}", type="secondary", on_click=ejecutar_borrado, args=(id_borrar,))
                                 
                         df_sede_det = tablas_sedes_limpias[i]
                         df_sede_det = df_sede_det[[c for c in ORDEN_COLUMNAS if c in df_sede_det.columns]]
