@@ -545,7 +545,7 @@ elif opcion == "Consolidado Total":
                 st.markdown("### ➕ Detalle de Compras (Laboratorios por Sede)")
                 
                 for idx, row in df_sedes.iterrows():
-                    sede_nombre = row["Sede / Sucursal"]
+                    sede_nombre = row["Droguería"]
                     compra_sede = row["Total Compra"]
                     und_sede = row["Total Unidades"]
                     
