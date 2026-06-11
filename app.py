@@ -345,7 +345,11 @@ elif opcion == "Ver Reportes":
 
     if db is not None:
         docs = db.collection("reportes_comparador").stream()
-        lista_reportes = [doc.to_dict() for doc in docs]
+        lista_reportes = []
+        for doc in docs:
+            datos = doc.to_dict()
+            datos["id_real_fb"] = doc.id  # Atrapa el ID exacto e intocable de Firebase
+            lista_reportes.append(datos)
         
         # En Ver Reportes mostramos absolutamente todos los laboratorios, ocultos o no
         labs_sistema = obtener_laboratorios(solo_visibles=False)
@@ -455,7 +459,7 @@ elif opcion == "Ver Reportes":
                         with col_acc1:
                             st.write(f"**Registrado el:** {r['fecha_registro']}")
                         with col_acc2:
-                            id_borrar = r["id_real_fb"]  # Usa el ID exacto que atrapamos arriba
+                            id_borrar = f"{r['sede'].lower().replace(' ', '_')}_{r['laboratorio'].lower().replace(' ', '_')}"
                             if st.button("🗑️ Eliminar datos", key=f"del_{id_borrar}", type="secondary"):
                                 db.collection("reportes_comparador").document(id_borrar).delete()
                                 st.warning(f"Datos de {r['sede']} eliminados.")
