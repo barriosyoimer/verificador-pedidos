@@ -11,7 +11,7 @@ import time
 st.set_page_config(page_title="Gestor de Pedidos - COMPARADOR", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 st.title("📊 Control Consolidado - Unidades y Valores NY")
 
-LISTA_SEDES = ["OLIVOS", "BAZAR", "SAN JACINTO", "HATICOS", "CUMBRES", "COROMOTO"]
+LISTA_SEDES = ["OLIVOS", "BAZAR", "SAN JACINTO", "HATICOS", "CUMBRES", "COROMOTO, VIZOCA"]
 # Reemplaza la línea que tienes por esta:
 ORDEN_COLUMNAS = ["Droguería", "Total Compra", "Total Artículos", "Total Unidades", "% Part. Dólares", "% Part. Unidades"]
 
