@@ -537,20 +537,29 @@ elif opcion == "Ver Reportes":
     st.divider()
 
     # Descarga inicial de datos de Firebase para optimizar el rendimiento de todas las pestañas
-    lista_reportes_completa = []
-    if db is not None:
-        with st.spinner("Consultando base de datos..."):
+    # --- PROTECCIÓN DE CARGAS A FIREBASE (CACHÉ DE 3 MINUTOS) ---
+    @st.cache_data(ttl=180, show_spinner=False)
+    def obtener_reportes_nube():
+        reportes = []
+        if db is not None:
+            # Esta línea solo se ejecutará 1 vez cada 3 minutos reales
             docs = db.collection("reportes_comparador").stream()
-            lista_reportes_completa = [dict(doc.to_dict(), id_real_fb=doc.id) for doc in docs]
+            reportes = [dict(doc.to_dict(), id_real_fb=doc.id) for doc in docs]
+        return reportes
+
+    with st.spinner("Consultando base de datos..."):
+        lista_reportes_completa = obtener_reportes_nube()
 
     # --- REQUERIMIENTO 2: Definición de las 5 pestañas ---
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📋 Consolidado de Reportes", 
-        "🗓️ Calendario Visual", 
-        "📊 Tabla Resumen del Mes",
-        "🔍 Rastreo de Cargas (Bi-Mes)",
-        "🚀 APERTURA" # NUEVA PESTAÑA
-    ])
+    # Modifica la declaración de las pestañas
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📋 Consolidado de Reportes", 
+    "🗓️ Calendario Visual", 
+    "📊 Tabla Resumen del Mes", 
+    "🔍 Rastreo de Cargas (Bi-Mes)",
+    "🚀 APERTURA",
+    "📦 Control de Inventario" # <--- NUEVA PESTAÑA
+     ])
     
     # ==========================================
     # PESTAÑA 1: CONSOLIDADO DE REPORTES (Filtrado por mes activo)
@@ -1033,6 +1042,184 @@ elif opcion == "Ver Reportes":
                 if not labs_listos: 
                     st.warning("Aún no se ha procesado ningún laboratorio.")
 
+
+    # ==========================================
+    # PESTAÑA 6: CONTROL DE INVENTARIO Y ALERTAS (OPTIMIZADO)
+    # ==========================================
+    with tab6:
+        st.subheader("📦 Control de Inventario Cruzado entre Sedes")
+        st.markdown("Este módulo analiza los artículos para evitar sobrepasar el inventario de los proveedores. *Los reportes se vencen automáticamente a las 3 horas de cargados.*")
+        
+        # --- 1. LÓGICA DE AUTO-LIMPIEZA ---
+        ahora = datetime.now()
+        reportes_activos = {}
+        documentos_a_eliminar = []
+        
+        for r in lista_reportes:
+            fecha_reg_str = r.get("fecha_registro")
+            sede_lab = f"{r.get('sede','').strip().upper()}_{r.get('laboratorio','').strip().upper()}"
+            doc_id_actual = f"{r.get('sede','').lower().replace(' ', '_')}_{r.get('laboratorio','').lower().replace(' ', '_')}"
+            
+            if fecha_reg_str:
+                try:
+                    fecha_doc = datetime.strptime(fecha_reg_str, "%Y-%m-%d %H:%M:%S")
+                    diferencia_horas = (ahora - fecha_doc).total_seconds() / 3600
+                    
+                    if diferencia_horas <= 3.0:
+                        if sede_lab not in reportes_activos or \
+                           datetime.strptime(reportes_activos[sede_lab].get("fecha_registro", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S") < fecha_doc:
+                            reportes_activos[sede_lab] = r
+                    else:
+                        documentos_a_eliminar.append(doc_id_actual)
+                except:
+                    reportes_activos[sede_lab] = r
+            else:
+                reportes_activos[sede_lab] = r
+        
+        if documentos_a_eliminar:
+            for doc_id_borrar in documentos_a_eliminar:
+                try:
+                    db.collection("reportes_comparador").document(doc_id_borrar).delete()
+                except:
+                    pass
+                    
+        lista_activos = list(reportes_activos.values())
+        
+        # --- 2. FILTRAR POR LABORATORIO ---
+        laboratorios_disponibles = sorted(list(set([r.get("laboratorio", "").strip().upper() for r in lista_activos if r.get("laboratorio")])))
+        
+        if not laboratorios_disponibles:
+            st.info("⏰ No hay cargas de inventario activas en este momento.")
+        else:
+            lab_seleccionado = st.selectbox("🧪 Selecciona el Laboratorio a Auditar:", laboratorios_disponibles)
+            
+            reportes_filtrados_lab = [r for r in lista_activos if r.get("laboratorio", "").strip().upper() == lab_seleccionado]
+            
+            # --- 3. CONSOLIDACIÓN INTELIGENTE DE ARTÍCULOS (Anti-Errores) ---
+            consolidado = {}
+            sedes_detectadas = set()
+            
+            for r in reportes_filtrados_lab:
+                sede_actual = r.get("sede", "Desconocida").strip().upper()
+                sedes_detectadas.add(sede_actual)
+                
+                for item in r.get("detalles_items", []):
+                    cod = str(item.get("codigo", "")).strip()
+                    prov = str(item.get("proveedor", "")).strip().upper()
+                    desc = str(item.get("descripcion", "")).strip()
+                    inv = int(item.get("inventario", 0))
+                    pedida = int(item.get("cantidad", 0))
+                    
+                    llave = (cod, prov)
+                    
+                    if llave not in consolidado:
+                        # Si es la primera vez que vemos este código, guardamos su descripción y su inventario
+                        consolidado[llave] = {
+                            "Código de Barra": cod,
+                            "Descripción": desc,
+                            "Proveedor": prov,
+                            "Inv. Disp.": inv
+                        }
+                    else:
+                        # Si el código ya existe, mantenemos la PRIMERA descripción.
+                        # Pero si el nuevo inventario reportado es MENOR, nos quedamos con el menor (más seguro)
+                        if inv < consolidado[llave]["Inv. Disp."]:
+                            consolidado[llave]["Inv. Disp."] = inv
+                            
+                    # Sumamos lo pedido por esta sede
+                    consolidado[llave][sede_actual] = consolidado[llave].get(sede_actual, 0) + pedida
+            
+            if not consolidado:
+                st.warning(f"⚠️ No se encontraron detalles para {lab_seleccionado}.")
+            else:
+                df_pivot = pd.DataFrame(list(consolidado.values()))
+                sedes_cols = sorted(list(sedes_detectadas))
+                
+                # Rellenar con 0 si una sede no pidió este producto específico
+                for s in sedes_cols:
+                    if s not in df_pivot.columns:
+                        df_pivot[s] = 0
+                    df_pivot[s] = df_pivot[s].fillna(0).astype(int)
+                
+                # 4. Cálculos y orden de columnas
+                df_pivot["Total Solicitado"] = df_pivot[sedes_cols].sum(axis=1)
+                df_pivot["Diferencia"] = df_pivot["Inv. Disp."] - df_pivot["Total Solicitado"]
+                
+                # Reglas de Alertas
+                cond_excedido = df_pivot["Total Solicitado"] > df_pivot["Inv. Disp."]
+                cond_precaucion = (df_pivot["Total Solicitado"] >= (df_pivot["Inv. Disp."] * 0.90)) & (~cond_excedido) & (df_pivot["Total Solicitado"] > 0)
+                
+                df_pivot["Estatus"] = np.where(cond_excedido, "🔴 EXCEDIDO", 
+                                      np.where(cond_precaucion, "🟡 PRECAUCIÓN", "✅ OK"))
+                
+                df_pivot["Orden_Estatus"] = np.where(df_pivot["Estatus"] == "🔴 EXCEDIDO", 1,
+                                            np.where(df_pivot["Estatus"] == "🟡 PRECAUCIÓN", 2, 3))
+                
+                # --- MÉTRICAS ---
+                st.markdown(f"##### 📊 Resumen de Pedidos Cruzados: {lab_seleccionado}")
+                c_met1, c_met2, c_met3 = st.columns(3)
+                total_items = len(df_pivot)
+                items_excedidos = len(df_pivot[df_pivot["Estatus"] == "🔴 EXCEDIDO"])
+                items_precaucion = len(df_pivot[df_pivot["Estatus"] == "🟡 PRECAUCIÓN"])
+                
+                c_met1.metric("📦 PRODUCTOS", f"{total_items}")
+                c_met2.metric("🚨 ALERTAS CRÍTICAS", f"{items_excedidos}")
+                c_met3.metric("⚠️ ALERTAS PRECAUCIÓN", f"{items_precaucion}")
+                
+                # Buscador y Filtro
+                col_b1, col_b2 = st.columns([2, 1])
+                with col_b1:
+                    busqueda_cod = st.text_input("🔍 Buscar por Producto, Código o Proveedor:", "")
+                with col_b2:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    mostrar_alertas = st.checkbox("⚠️ Ver solo alertas", value=False)
+                
+                if mostrar_alertas:
+                    df_pivot = df_pivot[df_pivot["Estatus"].isin(["🔴 EXCEDIDO", "🟡 PRECAUCIÓN"])]
+                    
+                if busqueda_cod:
+                    b = busqueda_cod.upper()
+                    df_pivot = df_pivot[df_pivot['Código de Barra'].str.contains(b) | 
+                                        df_pivot['Descripción'].str.upper().str.contains(b) | 
+                                        df_pivot['Proveedor'].str.upper().str.contains(b)]
+                
+                # --- ORDENAMIENTO DE FILAS ---
+                df_pivot = df_pivot.sort_values(by=["Orden_Estatus", "Proveedor", "Diferencia"], ascending=[True, True, True])
+                
+                # --- ORDENAMIENTO DE COLUMNAS (Inv. Disp. al lado del Total) ---
+                columnas_ordenadas = ["Estatus", "Código de Barra", "Descripción", "Proveedor"] + sedes_cols + ["Total Solicitado", "Inv. Disp.", "Diferencia"]
+                df_pivot = df_pivot[columnas_ordenadas]
+                
+                # --- DISEÑO VISUAL ---
+                def colorear_filas_inventario(row):
+                    if row["Estatus"] == "🔴 EXCEDIDO":
+                        return ['background-color: #421212; color: #ff8080; font-weight: bold'] * len(row)
+                    elif row["Estatus"] == "🟡 PRECAUCIÓN":
+                        return ['background-color: #423812; color: #ffdd80; font-weight: bold'] * len(row)
+                    return [''] * len(row)
+                
+                st.dataframe(
+                    df_pivot.style.apply(colorear_filas_inventario, axis=1)\
+                                  .format({"Inv. Disp.": "{:,.0f}", "Total Solicitado": "{:,.0f}", "Diferencia": "{:,.0f}"}),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=450
+                )
+
+                # --- 4. BOTÓN DE DESCARGA LIMPIA ---
+                # Quitamos Estatus, Orden_Estatus (si no lo ocultamos) y Diferencia para el Excel descargable
+                columnas_a_quitar = ["Estatus", "Orden_Estatus", "Diferencia"]
+                df_descarga = df_pivot.drop(columns=[col for col in columnas_a_quitar if col in df_pivot.columns])
+                csv = df_descarga.to_csv(index=False).encode('utf-8-sig')
+                
+                st.download_button(
+                    label=f"📥 Descargar Cuadro {lab_seleccionado} (Sin Alertas)",
+                    data=csv,
+                    file_name=f"Consolidado_{lab_seleccionado}_{datetime.now().strftime('%d_%m_%H%M')}.csv",
+                    mime="text/csv",
+                    type="primary"
+                )                
+                 
 # ==========================================
 # VISTA 3: CONSOLIDADO TOTAL
 # ==========================================
@@ -1165,3 +1352,4 @@ elif opcion == "Cargar Comparador":
     else:
         st.error("Error de conexión con Firebase. Verifica tus credenciales.")
     
+
