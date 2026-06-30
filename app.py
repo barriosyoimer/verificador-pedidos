@@ -537,18 +537,11 @@ elif opcion == "Ver Reportes":
     st.divider()
 
     # Descarga inicial de datos de Firebase para optimizar el rendimiento de todas las pestañas
-    # --- PROTECCIÓN DE CARGAS A FIREBASE (CACHÉ DE 3 MINUTOS) ---
-    @st.cache_data(ttl=180, show_spinner=False)
-    def obtener_reportes_nube():
-        reportes = []
-        if db is not None:
-            # Esta línea solo se ejecutará 1 vez cada 3 minutos reales
+    lista_reportes_completa = []
+    if db is not None:
+        with st.spinner("Consultando base de datos..."):
             docs = db.collection("reportes_comparador").stream()
-            reportes = [dict(doc.to_dict(), id_real_fb=doc.id) for doc in docs]
-        return reportes
-
-    with st.spinner("Consultando base de datos..."):
-        lista_reportes_completa = obtener_reportes_nube()
+            lista_reportes_completa = [dict(doc.to_dict(), id_real_fb=doc.id) for doc in docs]
 
     # --- REQUERIMIENTO 2: Definición de las 5 pestañas ---
     # Modifica la declaración de las pestañas
