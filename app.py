@@ -1042,15 +1042,12 @@ elif opcion == "Ver Reportes":
     with tab6:
         st.subheader("📦 Control de Inventario Cruzado entre Sedes")
         st.markdown("Este módulo analiza los artículos para evitar sobrepasar el inventario de los proveedores. *Los reportes se vencen automáticamente a las 3 horas de cargados.*")
-        
-        # --- 1. LÓGICA DE AUTO-LIMPIEZA ---
-        # --- 1. LÓGICA DE AUTO-LIMPIEZA (Mantiene el reporte, pero vacía el inventario) ---
-        ahora = datetime.now()
-        reportes_activos = {} 
+
+        ahora_local = datetime.utcnow() - timedelta(hours=4)
+        reportes_activos = {}
         documentos_a_limpiar_inv = []
         
         for r in lista_reportes:
-            # Usamos la fecha exclusiva del inventario que creamos en el escritorio
             fecha_reg_str = r.get("fecha_registro_inv", r.get("fecha_registro"))
             sede_lab = f"{r.get('sede','').strip().upper()}_{r.get('laboratorio','').strip().upper()}"
             doc_id_actual = f"{r.get('sede','').lower().replace(' ', '_')}_{r.get('laboratorio','').lower().replace(' ', '_')}"
@@ -1060,22 +1057,23 @@ elif opcion == "Ver Reportes":
             if tiene_inventario and fecha_reg_str:
                 try:
                     fecha_doc = datetime.strptime(fecha_reg_str, "%Y-%m-%d %H:%M:%S")
-                    diferencia_horas = (ahora - fecha_doc).total_seconds() / 3600
+                    
+                    # Usamos el reloj local sincronizado para medir la diferencia
+                    diferencia_horas = (ahora_local - fecha_doc).total_seconds() / 3600
                     
                     if diferencia_horas <= 3.0:
                         if sede_lab not in reportes_activos or \
                            datetime.strptime(reportes_activos[sede_lab].get("fecha_registro_inv", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S") < fecha_doc:
                             reportes_activos[sede_lab] = r
                     else:
-                        # Si pasaron 3 horas, lo anotamos para vaciar SOLO su inventario
+                        # Si realmente pasaron 3 horas, vacía SOLO esta sede específica
                         documentos_a_limpiar_inv.append(doc_id_actual)
                 except:
                     reportes_activos[sede_lab] = r
             elif tiene_inventario:
                 reportes_activos[sede_lab] = r
         
-        # Actualizamos la base de datos reemplazando el array de artículos por uno vacío []
-        # Esto elimina el inventario vencido, PERO deja intacto el total de dólares y el cuadro general
+        # Ejecuta la limpieza de Firebase de manera individual, sin afectar a los demás
         if documentos_a_limpiar_inv:
             for doc_id_borrar in documentos_a_limpiar_inv:
                 try:
@@ -1086,6 +1084,7 @@ elif opcion == "Ver Reportes":
         lista_activos = list(reportes_activos.values())
         
         # --- 2. FILTRAR POR LABORATORIO ---
+        
         laboratorios_disponibles = sorted(list(set([r.get("laboratorio", "").strip().upper() for r in lista_activos if r.get("laboratorio")])))
         
         if not laboratorios_disponibles:
