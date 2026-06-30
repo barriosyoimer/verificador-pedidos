@@ -10,9 +10,39 @@ import base64
 from PIL import Image
 import io
 
+# ... (Tus importaciones)
+
 # --- 1. CONFIGURACIÓN DEL ENTORNO Y CONSTANTES ---
 st.set_page_config(page_title="Gestor de Pedidos - COMPARADOR", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 st.title("📊 Control Consolidado - Unidades y Valores NY")
+
+@st.cache_resource
+def init_firebase():
+    if not firebase_admin._apps:
+        cred_dict = dict(st.secrets["firebase"])
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred, {
+            'storageBucket': 'gestor-de-pedidos-52c82.firebasestorage.app' 
+        })
+    return firestore.client()
+
+db = init_firebase()
+
+# --- 3. CONTROL DE CALENDARIO (AHORA DB SÍ EXISTE) ---
+st.sidebar.markdown("### ⚙️ Control de Calendario")
+try:
+    doc_config_cal = db.collection("app_config").document("calendario").get()
+    estado_mes_siguiente = doc_config_cal.to_dict().get("forzar_mes_siguiente", False) if doc_config_cal.exists else False
+except:
+    estado_mes_siguiente = False
+
+def toggle_mes_siguiente():
+    nuevo_estado = st.session_state.chk_mes_siguiente
+    if db is not None:
+        db.collection("app_config").document("calendario").set({"forzar_mes_siguiente": nuevo_estado}, merge=True)
+
+st.sidebar.checkbox("⏭️ Forzar Mes Siguiente", value=estado_mes_siguiente, key="chk_mes_siguiente", on_change=toggle_mes_siguiente, help="Activa esto para empezar a leer el mes que viene.")
+st.sidebar.markdown("---")
 
 LISTA_SEDES = ["OLIVOS", "BAZAR", "SAN JACINTO", "HATICOS", "CUMBRES", "COROMOTO"]
 ORDEN_COLUMNAS = ["Droguería", "Total Compra", "Total Artículos", "Total Unidades", "% Part. Dólares", "% Part. Unidades"]
@@ -984,56 +1014,107 @@ elif opcion == "Ver Reportes":
             )
         else:
             st.info("No se han detectado cargas operativas en la base de datos para el período actual ni el anterior.")
-    # ==========================================
-    # NUEVA PESTAÑA 5: MODO APERTURA
+   # ==========================================
+    # PESTAÑA 5: MODO APERTURA GLOBAL (ESTÉTICA ORIGINAL OPTIMIZADA)
     # ==========================================
     with tab5:
-        st.subheader(f"🚀 Estado de Apertura por Sede ({mes_sel:02d}/{anio_sel})")
-        sede_apertura = st.selectbox("Seleccione la Sede / Perfil a auditar:", LISTA_SEDES, key="sede_aper")
+        st.subheader("🚀 Gestión de Apertura (Global)")
         
-        if db is not None:
-            # 1. Obtenemos lo planeado en el calendario
-            cal_mes_ap = obtener_calendario(db, anio_sel, mes_sel)
-            labs_mes_esperados = set()
-            for dia in cal_mes_ap:
-                labs = dia.get("Laboratorios", [])
-                if isinstance(labs, str):
-                    labs = [l.strip().upper() for l in labs.split(",") if l.strip()]
-                for l in labs:
-                    if "DOMINGO" not in str(l).upper():
-                        labs_mes_esperados.add(str(l).strip().upper())
+        sede_apertura = st.selectbox("🏢 Selecciona la Sede para Apertura:", LISTA_SEDES, key="sede_ap")
+        
+        # --- 1. MEMORIA LOCAL (EVITA EL PARPADEO DE PANTALLA) ---
+        if "sede_activa" not in st.session_state or st.session_state.sede_activa != sede_apertura:
+            st.session_state.sede_activa = sede_apertura
+            doc_apertura = db.collection("estado_apertura").document(sede_apertura).get()
+            procesados_nube = doc_apertura.to_dict().get("procesados", []) if doc_apertura.exists else []
+            st.session_state.procesados_locales = set(procesados_nube)
             
-            # 2. Obtenemos lo que ya se procesó en el programa de escritorio
-            doc_ap_id = f"{anio_sel}_{mes_sel:02d}_{sede_apertura}"
-            doc_ap = db.collection("estado_apertura").document(doc_ap_id).get()
+        # --- 2. EXTRAER CALENDARIO ---
+        cal_mes_apertura = obtener_calendario(db, anio_sel, mes_sel)
+        labs_del_mes = set()
+        if cal_mes_apertura:
+            for dia in cal_mes_apertura:
+                labs_dia = dia.get("Laboratorios", [])
+                if isinstance(labs_dia, str):
+                    labs_dia = [l.strip().upper() for l in labs_dia.split(",") if l.strip()]
+                for l in labs_dia:
+                    if l and "DOMINGO" not in str(l).upper():
+                        labs_del_mes.add(l.strip().upper())
+        labs_del_mes = sorted(list(labs_del_mes))
+        
+        # --- 3. FUNCIONES CALLBACK (Se ejecutan en segundo plano sin reiniciar todo) ---
+        def mover_a_procesado(lab):
+            st.session_state.procesados_locales.add(lab)
             
-            labs_procesados = set()
-            if doc_ap.exists:
-                labs_procesados = set([l.upper() for l in doc_ap.to_dict().get("procesados", [])])
+        def regresar_a_pendiente(lab):
+            st.session_state.procesados_locales.discard(lab)
+            
+        # --- 4. MÉTRICAS ---
+        total_labs = len(labs_del_mes)
+        procesados_del_mes = [lab for lab in st.session_state.procesados_locales if lab in labs_del_mes]
+        cant_procesados = len(procesados_del_mes)
+        cant_pendientes = total_labs - cant_procesados
+        porcentaje = int((cant_procesados / total_labs) * 100) if total_labs > 0 else 0
+
+        col_m1, col_m2, col_m3, col_m4 = st.columns([1, 1, 1, 2])
+        col_m1.metric("📦 Planificados", total_labs)
+        col_m2.metric("✅ Listos", cant_procesados)
+        col_m3.metric("🔴 Pendientes", cant_pendientes)
+        with col_m4:
+            st.markdown(f"<div style='text-align: right; font-weight: bold;'>Progreso: {porcentaje}%</div>", unsafe_allow_html=True)
+            st.progress(porcentaje / 100)
+            
+        st.divider()
+
+        # --- 5. BUSCADOR Y GUARDADO EN LA NUBE ---
+        col_b1, col_b2 = st.columns([3, 1])
+        busqueda = col_b1.text_input("🔍 Buscar laboratorio...", "").strip().upper()
+        
+        # El botón maestro para sincronizar con el programa de escritorio
+        if col_b2.button("💾 Guardar Cambios en la Nube", type="primary", use_container_width=True):
+            with st.spinner("Sincronizando con el escritorio..."):
+                db.collection("estado_apertura").document(sede_apertura).set({
+                    "procesados": list(st.session_state.procesados_locales)
+                }, merge=True)
+                st.success("¡Guardado exitosamente!")
                 
-            labs_pendientes = sorted(list(labs_mes_esperados - labs_procesados))
-            labs_listos = sorted(list(labs_procesados.intersection(labs_mes_esperados)))
+        st.info("💡 **Tip:** Mueve los laboratorios con los botones de abajo. **No olvides darle a 'Guardar Cambios en la Nube'** cuando termines.")
+
+        # --- 6. LA ESTÉTICA DE DOS COLUMNAS ---
+        col_pendientes, col_procesados = st.columns(2)
+        
+        with col_pendientes:
+            st.markdown(f"""<div style="background-color:#1e1e1e; padding:15px; border-radius:10px; border-top:4px solid #ff4b4b; margin-bottom:15px;">
+                        <h4 style="margin-top:0; margin-bottom:0; color:#ff8080;">🔴 Pendientes</h4></div>""", unsafe_allow_html=True)
             
-            st.divider()
-            col_p1, col_p2 = st.columns(2)
+            pendientes_lista = [l for l in labs_del_mes if l not in st.session_state.procesados_locales]
+            if busqueda: pendientes_lista = [l for l in pendientes_lista if busqueda in l]
+                
+            if not pendientes_lista:
+                st.success("¡Todo listo por aquí!")
+            else:
+                for lab in pendientes_lista:
+                    c1, c2 = st.columns([3, 1])
+                    c1.markdown(f"🔬 **{lab}**")
+                    # Usamos on_click para evitar el lag de recarga
+                    c2.button("✔️ Listo", key=f"btn_p_{lab}_{sede_apertura}", on_click=mover_a_procesado, args=(lab,), use_container_width=True)
+
+        with col_procesados:
+            st.markdown(f"""<div style="background-color:#14231c; padding:15px; border-radius:10px; border-top:4px solid #10b981; margin-bottom:15px;">
+                        <h4 style="margin-top:0; margin-bottom:0; color:#52d681;">✅ Procesados</h4></div>""", unsafe_allow_html=True)
             
-            with col_p1:
-                st.markdown(f"#### 🔴 NO PROCESADOS ({len(labs_pendientes)})")
-                st.markdown("<span style='color: gray; font-size: 13px;'>Pendientes por procesar en el programa de escritorio</span>", unsafe_allow_html=True)
-                for lab in labs_pendientes:
-                    st.markdown(f"❌ {lab}")
-                if not labs_pendientes and labs_mes_esperados: 
-                    st.success("🎉 ¡Todos los laboratorios del mes han sido procesados!")
-                elif not labs_mes_esperados:
-                    st.info("No hay laboratorios en el calendario este mes.")
-                    
-            with col_p2:
-                st.markdown(f"#### 🟢 PROCESADOS ({len(labs_listos)})")
-                st.markdown("<span style='color: gray; font-size: 13px;'>Ya generados este mes para esta sede</span>", unsafe_allow_html=True)
-                for lab in labs_listos:
-                    st.markdown(f"✅ <span style='color: #2ecc71; font-weight: bold;'>{lab}</span>", unsafe_allow_html=True)
-                if not labs_listos: 
-                    st.warning("Aún no se ha procesado ningún laboratorio.")
+            procesados_lista = sorted(list(st.session_state.procesados_locales))
+            if busqueda: procesados_lista = [l for l in procesados_lista if busqueda in l]
+                
+            if not procesados_lista:
+                st.write("Aún no hay procesados.")
+            else:
+                for lab in procesados_lista:
+                    c1, c2 = st.columns([3, 1])
+                    badge = "📅" if lab in labs_del_mes else "<span style='color:gray; font-size:12px;'>(Extra)</span>"
+                    c1.markdown(f"✅ {lab} {badge}", unsafe_allow_html=True)
+                    # Usamos on_click para evitar el lag de recarga
+                    c2.button("❌ Quitar", key=f"btn_q_{lab}_{sede_apertura}", on_click=regresar_a_pendiente, args=(lab,), use_container_width=True)
 
 
     # ==========================================
