@@ -10,8 +10,6 @@ import base64
 from PIL import Image
 import io
 
-# ... (Tus importaciones)
-
 # --- 1. CONFIGURACIÓN DEL ENTORNO Y CONSTANTES ---
 st.set_page_config(page_title="Gestor de Pedidos - COMPARADOR", page_icon="📊", layout="wide", initial_sidebar_state="collapsed")
 st.title("📊 Control Consolidado - Unidades y Valores NY")
@@ -28,31 +26,15 @@ def init_firebase():
 
 db = init_firebase()
 
-# --- 3. CONTROL DE CALENDARIO (AHORA DB SÍ EXISTE) ---
-st.sidebar.markdown("### ⚙️ Control de Calendario")
-try:
-    doc_config_cal = db.collection("app_config").document("calendario").get()
-    estado_mes_siguiente = doc_config_cal.to_dict().get("forzar_mes_siguiente", False) if doc_config_cal.exists else False
-except:
-    estado_mes_siguiente = False
-
-def toggle_mes_siguiente():
-    nuevo_estado = st.session_state.chk_mes_siguiente
-    if db is not None:
-        db.collection("app_config").document("calendario").set({"forzar_mes_siguiente": nuevo_estado}, merge=True)
-
-st.sidebar.checkbox("⏭️ Forzar Mes Siguiente", value=estado_mes_siguiente, key="chk_mes_siguiente", on_change=toggle_mes_siguiente, help="Activa esto para empezar a leer el mes que viene.")
-st.sidebar.markdown("---")
-
 LISTA_SEDES = ["OLIVOS", "BAZAR", "SAN JACINTO", "HATICOS", "CUMBRES", "COROMOTO"]
 ORDEN_COLUMNAS = ["Droguería", "Total Compra", "Total Artículos", "Total Unidades", "% Part. Dólares", "% Part. Unidades"]
+
 # --- INYECCIÓN DE CSS PARA LIMITAR LAS BARRAS DE SELECCIÓN ---
 st.markdown("""
 <style>
-    /* Limitar la altura de los menús desplegables globales */
     div[data-baseweb="popover"] ul {
-        max-height: 200px !important; /* Ajusta la altura a unos 5 elementos */
-        overflow-y: auto !important; /* Fuerza la barra de desplazamiento */
+        max-height: 200px !important;
+        overflow-y: auto !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -65,22 +47,7 @@ if "dia_seleccionado" not in st.session_state:
 def actualizar_sede():
     st.session_state.sede_seleccionada = st.session_state.sede_widget
 
-# --- 2. INICIALIZACIÓN DE FIREBASE ---
-@st.cache_resource
-def init_firebase():
-    if not firebase_admin._apps:
-        cred_dict = dict(st.secrets["firebase"])
-        cred = credentials.Certificate(cred_dict)
-        
-        # Aquí colocamos tu Storage exacto
-        firebase_admin.initialize_app(cred, {
-            'storageBucket': 'gestor-de-pedidos-52c82.firebasestorage.app' 
-        })
-    return firestore.client()
-
-db = init_firebase()
-# --- NUEVO: CARGA DINÁMICA DE SEDES DESDE LOS PERFILES DEL ESCRITORIO ---
-@st.cache_data(ttl=600) # Cache de 10 minutos para ahorrar lecturas a Firebase
+@st.cache_data(ttl=600)
 def obtener_sedes():
     if db is not None:
         try:
@@ -92,20 +59,17 @@ def obtener_sedes():
     return ["OLIVOS", "BAZAR", "SAN JACINTO", "HATICOS", "CUMBRES", "COROMOTO"]
 
 LISTA_SEDES = obtener_sedes()
+
 # --- 3. FUNCIONES PARA LOGOS EN FIREBASE CON COMPRESIÓN ---
 def guardar_logo_firebase(nombre_lab, file_bytes):
     if db:
         try:
-            # Comprimir la imagen para que JAMÁS sobrepase el límite de memoria de Firebase
             img = Image.open(io.BytesIO(file_bytes))
-            # Convertir a RGBA primero por si es un formato sin transparencia, y luego asegurar compatibilidad
             if img.mode in ("RGBA", "P"): img = img.convert("RGBA")
             img.thumbnail((150, 150))
-            
             buffered = io.BytesIO()
             img.save(buffered, format="PNG")
             img_compressed = buffered.getvalue()
-            
             b64_img = base64.b64encode(img_compressed).decode()
             doc_id = nombre_lab.strip().upper().replace(" ", "_")
             db.collection("configuracion_logos").document(doc_id).set({"logo_b64": b64_img})
@@ -123,39 +87,19 @@ def obtener_logos_firebase():
             pass
     return logos
 
-# --- 4. LÓGICA DE GENERACIÓN AUTOMÁTICA DEL CALENDARIO (En blanco desde cero) ---
-def generar_calendario_dinamico(year, month, labs_semana=None, labs_sabados=None):
+# --- 4. LÓGICA DE GENERACIÓN EN BLANCO DEL CALENDARIO ---
+def generar_calendario_dinamico(year, month):
     num_days = calendar.monthrange(year, month)[1]
     calendario = []
     dias_es = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"}
     
-    # Contadores para recorrer las listas de carga heredadas del mes pasado
-    idx_semana = 0
-    idx_sabado = 0
-    
     for day in range(1, num_days + 1):
         fecha_obj = date(year, month, day)
         dia_semana = fecha_obj.weekday()
-        
-        if dia_semana == 6:  # Domingo siempre queda libre
-            asignacion = ["DOMINGO / LIBRE"]
-        elif dia_semana == 5:  # Sábados: Conservan su propia secuencia fija
-            if labs_sabados and idx_sabado < len(labs_sabados):
-                asignacion = labs_sabados[idx_sabado]
-            else:
-                asignacion = []
-            idx_sabado += 1
-        else:  # Días de semana (Lunes a Viernes): Siguen el orden secuencial de carga
-            if labs_semana and idx_semana < len(labs_semana):
-                asignacion = labs_semana[idx_semana]
-            else:
-                asignacion = []
-            idx_semana += 1
-            
         calendario.append({
             "Fecha": fecha_obj.strftime("%Y-%m-%d"),
             "Día": dias_es[dia_semana],
-            "Laboratorios": asignacion 
+            "Laboratorios": [] 
         })
     return calendario
 
@@ -166,32 +110,7 @@ def obtener_calendario(db_conn, year, month):
     if doc.exists:
         return doc.to_dict().get("dias", [])
     else:
-        # Calcular de manera automática el año y mes anterior
-        if month == 1:
-            prev_year = year - 1
-            prev_month = 12
-        else:
-            prev_year = year
-            prev_month = month - 1
-            
-        prev_doc_id = f"{prev_year}_{prev_month:02d}"
-        prev_doc = db_conn.collection("configuracion_calendario").document(prev_doc_id).get()
-        
-        labs_semana = None
-        labs_sabados = None
-        
-        # Si hay planificación registrada en el mes anterior, extraemos los patrones
-        if prev_doc.exists:
-            prev_dias = prev_doc.to_dict().get("dias", [])
-            
-            # 1. Guardamos la carga de los sábados en orden cronológico (1º sábado, 2º sábado...)
-            labs_sabados = [d.get("Laboratorios", []) for d in prev_dias if d.get("Día") == "Sábado"]
-            
-            # 2. Guardamos la lista continua de lunes a viernes en el orden en que fueron configurados
-            labs_semana = [d.get("Laboratorios", []) for d in prev_dias if d.get("Día") in ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]]
-            
-        # Generamos el nuevo calendario inyectando el orden del mes pasado
-        nuevo_cal = generar_calendario_dinamico(year, month, labs_semana, labs_sabados)
+        nuevo_cal = generar_calendario_dinamico(year, month)
         db_conn.collection("configuracion_calendario").document(doc_id).set({"dias": nuevo_cal})
         return nuevo_cal
 
@@ -242,11 +161,9 @@ if opcion == "Cargar Excel":
     ayer = hoy - timedelta(days=1)
     manana = hoy + timedelta(days=1)
     
-    # Formatos de fecha (Uno para buscar en la base de datos, otro para mostrar)
     hoy_str_db = hoy.strftime("%Y-%m-%d")
     hoy_str_visor = hoy.strftime("%d-%m-%Y") 
 
-    # Función auxiliar para extraer laboratorios de un día específico
     def extraer_labs_dia(fecha_busqueda):
         cal = obtener_calendario(db, fecha_busqueda.year, fecha_busqueda.month)
         fecha_str = fecha_busqueda.strftime("%Y-%m-%d")
@@ -263,7 +180,6 @@ if opcion == "Cargar Excel":
     lista_labs_ayer = extraer_labs_dia(ayer)
     lista_labs_manana = extraer_labs_dia(manana)
             
-    # DISEÑO: Nombres de laboratorios tipo "Etiquetas"
     if lista_labs_hoy:
         html_labs = "".join([f'<span style="background-color: #1e293b; color: #60a5fa; padding: 8px 16px; border-radius: 20px; font-weight: bold; margin: 5px 10px 5px 0; display: inline-block; border: 1px solid #3b82f6; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🔬 {lab}</span>' for lab in lista_labs_hoy])
     else:
@@ -276,7 +192,6 @@ if opcion == "Cargar Excel":
     </div>
     """, unsafe_allow_html=True)
 
-    # DISEÑO: Carrusel de imágenes de los laboratorios
     if lista_labs_hoy:
         logos_guardados = obtener_logos_firebase()
         html_imagenes = ""
@@ -285,11 +200,9 @@ if opcion == "Cargar Excel":
             lab_id = lab.strip().upper().replace(" ", "_")
             if lab_id in logos_guardados and logos_guardados[lab_id]:
                 img_src = f"data:image/png;base64,{logos_guardados[lab_id]}"
-                # Se aumentó width/height a 120px y se redujo el margin a 10px
                 html_imagenes += f'<img src="{img_src}" style="background-color: white; object-fit: contain; padding: 4px; border-radius: 50%; width: 120px; height: 120px; margin: 0 10px; border: 3px solid #3b82f6; box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);">'
             else:
                 nombre_url = lab.replace(" ", "+")
-                # Se aumentó width/height a 120px y se redujo el margin a 10px
                 html_imagenes += f'<img src="https://ui-avatars.com/api/?name={nombre_url}&background=random&color=fff&size=100&rounded=true&bold=true&font-size=0.4" style="border-radius: 50%; width: 120px; height: 120px; margin: 0 10px; border: 3px solid #3b82f6; box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);">'
         
         html_repetido = html_imagenes * 10
@@ -303,6 +216,7 @@ if opcion == "Cargar Excel":
         """, unsafe_allow_html=True)
     else:
         st.divider()
+
     with st.expander("👀 Ver laboratorios de Ayer y Mañana"):
         col_ayer, col_manana = st.columns(2)
         with col_ayer:
@@ -341,8 +255,25 @@ if opcion == "Cargar Excel":
     uploaded_file = st.file_uploader("Seleccionar archivo (.xlsm / .xlsx)", type=["xlsx", "xlsm"], key=f"uploader_{st.session_state.uploader_key}")
 
     if uploaded_file is not None and laboratorio_input != "":
-        doc_id_verificar = f"{sede_input.lower().replace(' ', '_')}_{laboratorio_input.lower().replace(' ', '_')}"
-        esta_bloqueado = db.collection("reportes_comparador").document(doc_id_verificar).get().exists if db else False
+        doc_base = f"{sede_input.lower().replace(' ', '_')}_{laboratorio_input.lower().replace(' ', '_')}"
+        doc_id_verificar = f"{doc_base}_{int(time.time())}"
+        esta_bloqueado = False
+        
+        if db:
+            docs_prev = db.collection("reportes_comparador").where("sede", "==", sede_input).where("laboratorio", "==", laboratorio_input).stream()
+            ahora_utc = datetime.utcnow() - timedelta(hours=4)
+            for d in docs_prev:
+                data_prev = d.to_dict()
+                f_prev_str = data_prev.get("fecha_sistema", data_prev.get("fecha_registro", ""))
+                if f_prev_str:
+                    try:
+                        f_prev = datetime.strptime(f_prev_str, "%Y-%m-%d %H:%M:%S")
+                        diff_horas = (ahora_utc - f_prev).total_seconds() / 3600
+                        if 0 <= diff_horas <= 24.0:
+                            doc_id_verificar = d.id
+                            esta_bloqueado = True
+                            break
+                    except: pass
 
         if esta_bloqueado:
             st.warning(f"⚠️ **Sobre-escritura detectada:** Los datos de {laboratorio_input} para la sede {sede_input} ya existen. Guardar reemplazará los registros previos.")
@@ -447,7 +378,9 @@ if opcion == "Cargar Excel":
                     payload = {
                         "sede": sede_input, "laboratorio": laboratorio_input,
                         "total_dolares": float(suma_real_dolares), "total_unidades": int(round(suma_real_unidades)),
-                        "fecha_registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "datos_cuadro": df_tabla.to_dict(orient="records")
+                        "fecha_registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "fecha_sistema": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), # <-- LINEA NUEVA
+                        "datos_cuadro": df_tabla.to_dict(orient="records")
                     }
                     db.collection("reportes_comparador").document(doc_id_verificar).set(payload)
                     st.success("🚀 Sincronizado con éxito.")
@@ -457,14 +390,6 @@ if opcion == "Cargar Excel":
         except Exception as e:
             st.error(f"Error: {e}")
 
-# ==========================================
-# VISTA 2: VER REPORTES Y PLANIFICACIÓN (OPTIMIZADO)
-# ==========================================
-# ==========================================
-    # ==========================================
-    # NUEVA SECCIÓN: DESCARGA DEL EXCEL MAESTRO
-    # (Asegúrate de que esta línea esté a la misma altura de indentación que el contenido de Cargar Excel)
-    # ==========================================
     st.divider()
     
     if db is not None:
@@ -472,7 +397,6 @@ if opcion == "Cargar Excel":
         doc_snap_global = doc_ref_global.get()
         ultima_act = doc_snap_global.to_dict().get("ultima_actualizacion", "Sin registros") if doc_snap_global.exists else "Sin registros"
         
-        # Diseño mejorado: Título modificado y fecha más resaltada
         st.markdown(f"""
         <div style="background-color: #1e293b; padding: 25px; border-radius: 12px; border-left: 6px solid #10b981; box-shadow: 0 6px 12px rgba(0,0,0,0.4); margin-bottom: 25px;">
             <h3 style="margin: 0 0 10px 0; color: #f8fafc; font-size: 24px;">📊 Archivo Excel Comparador</h3>
@@ -490,14 +414,11 @@ if opcion == "Cargar Excel":
             except:
                 return None
 
-       
         excel_bytes = obtener_bytes_maestro(ultima_act)
 
         if excel_bytes:
-            # --- CSS INYECTADO: BOTÓN PREMIUM (CORREGIDO) ---
             st.markdown("""
             <style>
-                /* Estructura y fondo del botón */
                 div[data-testid="stDownloadButton"] button {
                     background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
                     border: 1px solid #047857 !important;
@@ -506,8 +427,6 @@ if opcion == "Cargar Excel":
                     box-shadow: 0 4px 10px rgba(16, 185, 129, 0.3) !important;
                     transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) !important;
                 }
-                
-                /* Forzar el tamaño, fuente y negrita */
                 div[data-testid="stDownloadButton"] button, 
                 div[data-testid="stDownloadButton"] button p {
                     font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
@@ -517,26 +436,17 @@ if opcion == "Cargar Excel":
                     letter-spacing: 1px !important; 
                     margin: 0 !important;
                 }
-                
-                /* Efecto hover (al pasar el mouse) */
                 div[data-testid="stDownloadButton"] button:hover {
                     background: linear-gradient(135deg, #059669 0%, #047857 100%) !important;
                     box-shadow: 0 8px 20px rgba(16, 185, 129, 0.6) !important;
                     transform: translateY(-3px) !important;
-                    border: 1px solid #064e3b !important;
                 }
-                
-                /* LA SOLUCIÓN: Efecto visual de "Presionado" sin bloquear el clic */
-                div[data-testid="stDownloadButton"] button:active,
-                div[data-testid="stDownloadButton"] button:focus {
-                    transform: translateY(2px) !important; /* Se hunde profundamente */
-                    box-shadow: 0 1px 3px rgba(16, 185, 129, 0.4) !important;
-                    filter: brightness(0.6) !important; /* Se oscurece notablemente */
+                div[data-testid="stDownloadButton"] button:active {
+                    transform: translateY(2px) !important;
                 }
             </style>
             """, unsafe_allow_html=True)
 
-            # Botón centrado
             c_btn1, c_btn2, c_btn3 = st.columns([1, 2, 1])
             with c_btn2:
                 tz_venezuela = timezone(timedelta(hours=-4))
@@ -553,10 +463,12 @@ if opcion == "Cargar Excel":
         else:
             st.info("💡 Aún no se ha subido ningún archivo maestro a la base de datos.")
 
+# ==========================================
+# VISTA 2: VER REPORTES
+# ==========================================
 elif opcion == "Ver Reportes":
     st.header("📊 Panel de Visualización y Planificación")
     
-    # --- MEJORA ESTÉTICA: Selectores globales al inicio ---
     hoy = datetime.now()
     col_f_global1, col_f_global2 = st.columns(2)
     with col_f_global1: 
@@ -566,39 +478,32 @@ elif opcion == "Ver Reportes":
 
     st.divider()
 
-    # Descarga inicial de datos de Firebase para optimizar el rendimiento de todas las pestañas
     lista_reportes_completa = []
     if db is not None:
         with st.spinner("Consultando base de datos..."):
             docs = db.collection("reportes_comparador").stream()
             lista_reportes_completa = [dict(doc.to_dict(), id_real_fb=doc.id) for doc in docs]
 
-    # --- REQUERIMIENTO 2: Definición de las 5 pestañas ---
-    # Modifica la declaración de las pestañas
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📋 Consolidado de Reportes", 
-    "🗓️ Calendario Visual", 
-    "📊 Tabla Resumen del Mes", 
-    "🔍 Rastreo de Cargas (Bi-Mes)",
-    "🚀 APERTURA",
-    "📦 Control de Inventario" # <--- NUEVA PESTAÑA
-     ])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📋 Reportes", 
+        "🗓️ Calendario", 
+        "📊 Resumen Global", 
+        "🔍 Rastreo de Cargas",
+        "🚀 APERTURA",
+        "📦 Control de Inventario",
+        "💰 Descuentos"
+    ])
     
-    # ==========================================
-    # PESTAÑA 1: CONSOLIDADO DE REPORTES (Filtrado por mes activo)
-    # ==========================================
+    # PESTAÑA 1: CONSOLIDADO
     with tab1:
         if db is not None:
-            # --- REQUERIMIENTO 1: Filtrar para que muestre SOLO el mes seleccionado ---
             mes_busqueda_str = f"{anio_sel}-{mes_sel:02d}"
             lista_reportes = [r for r in lista_reportes_completa if r.get("fecha_registro", "").startswith(mes_busqueda_str)]
-            
             labs_sistema = sorted(list(set(r.get("laboratorio", "").strip().upper() for r in lista_reportes if r.get("laboratorio"))))
 
             if labs_sistema:
                 lab_guardado = st.query_params.get("lab", labs_sistema[0])
                 idx_lab = labs_sistema.index(lab_guardado) if lab_guardado in labs_sistema else 0
-        
                 lab_seleccionado = st.selectbox("Seleccione el Laboratorio a evaluar:", labs_sistema, index=idx_lab)
                 st.query_params["lab"] = lab_seleccionado
                 
@@ -653,7 +558,7 @@ elif opcion == "Ver Reportes":
                         if 'part.' in col_str or '%' in col_str: formatters_global[col] = lambda x: formato_ve(x, es_porcentaje=True)
                         elif 'unidades' in col_str or 'artículos' in col_str: formatters_global[col] = lambda x: formato_ve(x, es_unidad=True)
                         else: formatters_global[col] = lambda x: formato_ve(x)
-
+             
                     st.dataframe(estilar_tabla_oscura(df_consolidado, formatters_global), use_container_width=True)
 
                     st.markdown("### ➕ Desglose Detallado por Sucursal")
@@ -661,12 +566,22 @@ elif opcion == "Ver Reportes":
                         with st.expander(f"🔹 {r['sede']} | 📦 Unidades: {formato_ve(r['total_unidades'], es_unidad=True)} | 💵 Compra: $ {formato_ve(r['total_dolares'])}"):
                             st.button("🗑️ Eliminar Registro", key=f"del_{r['id_real_fb']}", type="secondary", on_click=lambda id_d: db.collection("reportes_comparador").document(id_d).delete(), args=(r['id_real_fb'],))
                             st.dataframe(estilar_tabla_oscura(tablas_sedes_limpias[i], formatters_global), use_container_width=True)
-            else:
+                    
+                    st.write("")
+                    st.markdown(f"#### 📊 Totales Globales de {lab_seleccionado}")
+                    c_tot1, c_tot2 = st.columns(2)
+                    
+                    with c_tot1: 
+                        st.markdown(f"""<div style="background-color:#14231c; padding:25px; border-radius:12px; border-left:6px solid #10b981; text-align:center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);"><span style="color:#a3cfbb; font-size:16px; font-weight:bold;">💵 Total Compra Consolidada</span><br><span style="color:#52d681; font-size:52px; font-weight:900;">$ {formato_ve(total_usd_global)}</span></div>""", unsafe_allow_html=True)
+                    
+                    with c_tot2: 
+                        st.markdown(f"""<div style="background-color:#101f30; padding:25px; border-radius:12px; border-left:6px solid #0d6efd; text-align:center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);"><span style="color:#9ec5fe; font-size:16px; font-weight:bold;">📦 Total Unidades Consolidadas</span><br><span style="color:#6ea8fe; font-size:52px; font-weight:900;">{formato_ve(total_und_global, es_unidad=True)}</span></div>""", unsafe_allow_html=True)
+                    
+                    st.write("") # Espaciador ligero
+            else:   
                 st.info(f"💡 No hay datos registrados en el sistema para el mes {mes_sel:02d}/{anio_sel}.")
 
-    # ==========================================
-    # PESTAÑA 2: CALENDARIO VISUAL E INTERACTIVO
-    # ==========================================
+    # PESTAÑA 2: CALENDARIO VISUAL (ESTILO APERTURA CORREGIDO)
     with tab2:
         st.subheader(f"🗓️ Planificación Visual de Cargas del Mes ({mes_sel:02d}/{anio_sel})")
         
@@ -692,16 +607,10 @@ elif opcion == "Ver Reportes":
                 else:
                     fecha_str = f"{anio_sel}-{mes_sel:02d}-{dia_num:02d}"
                     info_dia = next((d for d in cal_mes if d.get("Fecha") == fecha_str), None)
-                    
                     labs_del_dia = info_dia.get("Laboratorios", []) if info_dia else []
-                    if isinstance(labs_del_dia, str):
-                        cantidad_labs = len([l for l in labs_del_dia.split(",") if l.strip() and "DOMINGO" not in l.upper()])
-                    else:
-                        cantidad_labs = len([l for l in labs_del_dia if "DOMINGO" not in str(l).upper()])
+                    cantidad_labs = len(labs_del_dia)
 
-                    es_domingo = (i == 6)
-                    texto_boton = "DOMINGO" if es_domingo else f"{cantidad_labs} Labs"
-                    
+                    texto_boton = f"{cantidad_labs} Labs"
                     es_hoy = (hoy_actual_date.year == anio_sel and hoy_actual_date.month == mes_sel and hoy_actual_date.day == dia_num)
                     es_seleccionado = (st.session_state.dia_seleccionado == dia_num)
                  
@@ -715,219 +624,167 @@ elif opcion == "Ver Reportes":
 
         st.divider()
         
-        # Panel de edición de laboratorios del día seleccionado
         dia_sel = st.session_state.dia_seleccionado
         fecha_sel_str = f"{anio_sel}-{mes_sel:02d}-{dia_sel:02d}"
         info_dia_sel = next((d for d in cal_mes if d.get("Fecha") == fecha_sel_str), None)
         
-        st.markdown(f"### 🔍 Laboratorios para el Día: **{dia_sel:02d}/{mes_sel:02d}/{anio_sel}**")
+        st.markdown(f"### 🎯 Asignación de Laboratorios: **{dia_sel:02d}/{mes_sel:02d}/{anio_sel}**")
         
-        labs_actuales = info_dia_sel.get("Laboratorios", []) if info_dia_sel else []
-        if isinstance(labs_actuales, str):
-            labs_actuales = [l.strip().upper() for l in labs_actuales.split(",") if l.strip()]
-            
-        df_labs_dia = pd.DataFrame({
-            "Laboratorio": pd.Series(labs_actuales, dtype="str"),
-            "Eliminar": pd.Series([False] * len(labs_actuales), dtype="bool")
-        })
- 
-        col_ed1, col_ed2 = st.columns([2, 1])
-        with col_ed1:
-            st.markdown("👇 **Escribe los laboratorios aquí.** Usa '+' para añadir. Marca **🗑️ Eliminar** y guarda para borrar.")
-            df_editado = st.data_editor(
-                df_labs_dia,
-                key=f"editor_tabla_{fecha_sel_str}",
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Laboratorio": st.column_config.TextColumn("Nombre del Laboratorio", required=True),
-                    "Eliminar": st.column_config.CheckboxColumn("🗑️ Eliminar", default=False)
-                }
-            )
-        with col_ed2:
-            st.write("")
-            st.write("")
-            if st.button("💾 Guardar Día", type="primary", use_container_width=True):
-                nuevos_labs = []
-                for _, row in df_editado.iterrows():
-                    if not row.get("Eliminar", False):
-                        val = str(row["Laboratorio"]).strip().upper()
-                        if val and val not in ["NONE", "NAN", "<NA>"]:
-                            nuevos_labs.append(val)
-                 
-                for d in cal_mes:
-                    if d.get("Fecha") == fecha_sel_str:
-                        d["Laboratorios"] = nuevos_labs
-                        break
-                 
-                actualizar_calendario(db, anio_sel, mes_sel, pd.DataFrame(cal_mes))
-                st.success(f"¡Guardado correctamente! ({len(nuevos_labs)} laboratorios)")
-                time.sleep(0.5)
-                st.rerun()
+        # Base de datos del maestro
+        logos_actuales_db = obtener_logos_firebase()
+        lista_todos_labs = sorted(list(set(key.replace("_", " ") for key in logos_actuales_db.keys())))
+        
+        dia_sel_str = f"{dia_sel:02d}"
 
-        st.divider()
-        # --- NUEVA REASIGNACIÓN TEMPORAL DE CARGAS ---
-        st.markdown("#### 🛠️ Reasignación Temporal de Cargas")
-        st.markdown("Mueve todos los laboratorios de un día específico a otro día distinto. (Ajuste Temporal)")
-        c_em1, c_em2, c_em3 = st.columns([1, 1, 2])
+        if "dia_editando" not in st.session_state or st.session_state.dia_editando != fecha_sel_str:
+            st.session_state.dia_editando = fecha_sel_str
+            labs_actuales_dia = info_dia_sel.get("Laboratorios", []) if info_dia_sel else []
+            st.session_state.labs_del_dia_local = set(labs_actuales_dia)
+
+        def agregar_al_dia(lab):
+            st.session_state.labs_del_dia_local.add(lab)
+        def quitar_del_dia(lab):
+            st.session_state.labs_del_dia_local.discard(lab)
+
+        # 1. Rastrear asignaciones fusionando la Base de Datos con el Estado Local (Bug fix)
+        mapa_asignaciones = {l: [] for l in lista_todos_labs}
+        for d in cal_mes:
+            d_str = d.get("Fecha", "").split("-")[-1] if "-" in d.get("Fecha", "") else ""
+            if d_str != dia_sel_str: # Ignorar el día actual desde la BD
+                for l in d.get("Laboratorios", []):
+                    if l in mapa_asignaciones and d_str not in mapa_asignaciones[l]:
+                        mapa_asignaciones[l].append(d_str)
+
+        # Inyectar el estado local (sin guardar) al mapa
+        for l in st.session_state.labs_del_dia_local:
+            if l in mapa_asignaciones and dia_sel_str not in mapa_asignaciones[l]:
+                mapa_asignaciones[l].append(dia_sel_str)
+
+        labs_asignados_mes = set(l for l, dias in mapa_asignaciones.items() if len(dias) > 0)
+        pendientes_absolutos_mes = [l for l in lista_todos_labs if l not in labs_asignados_mes]
         
-        dias_disponibles = list(range(1, num_dias_mes + 1))
+        # --- NUEVO: CARGA RÁPIDA MÚLTIPLE INTELIGENTE ---
+        st.markdown("#### ⚡ Carga Rápida Múltiple")
+        col_r1, col_r2 = st.columns([3, 1])
+        bulk_input = col_r1.text_input("Escribe laboratorios separados por guión '-' (Ej: LETI-CALOX-FARMA):", key="bulk_cal_in").strip().upper()
         
-        with c_em1:
-            dia_origen = st.selectbox("📅 Día Origen (Desde):", dias_disponibles, index=dias_disponibles.index(dia_sel) if dia_sel in dias_disponibles else 0)
-            
-        with c_em2:
-            dias_destino_validos = [d for d in dias_disponibles if d != dia_origen]
-            dia_destino = st.selectbox("📅 Día Destino (Hacia):", dias_destino_validos)
-            
-        with c_em3:
-            st.write("") 
-            st.write("")
-            if st.button(f"🔄 Mover del día {dia_origen} al {dia_destino}", type="secondary", use_container_width=True):
-                origen_str = f"{anio_sel}-{mes_sel:02d}-{dia_origen:02d}"
-                destino_str = f"{anio_sel}-{mes_sel:02d}-{dia_destino:02d}"
+        if col_r2.button("➕ Añadir Lote", use_container_width=True):
+            if bulk_input:
+                labs_bulk = [l.strip() for l in bulk_input.split("-") if l.strip()]
+                ignorados = []
+                agregados = 0
+                repetidos = 0
+                for l in labs_bulk:
+                    if l in lista_todos_labs: 
+                        # Detectar si ya estaba asignado a otro día
+                        if l in labs_asignados_mes and l not in st.session_state.labs_del_dia_local:
+                            repetidos += 1
+                        st.session_state.labs_del_dia_local.add(l)
+                        agregados += 1
+                    else:
+                        ignorados.append(l)
                 
-                idx_origen = next((i for i, d in enumerate(cal_mes) if d["Fecha"] == origen_str), None)
-                idx_destino = next((i for i, d in enumerate(cal_mes) if d["Fecha"] == destino_str), None)
-                
-                labs_origen = cal_mes[idx_origen].get("Laboratorios", [])
-                labs_destino = cal_mes[idx_destino].get("Laboratorios", [])
-              
-                if "DOMINGO" in str(labs_destino).upper():
-                    st.error("❌ No puedes mover laboratorios hacia un Domingo.")
-                elif not labs_origen:
-                    st.warning("⚠️ El día origen está vacío, no hay nada que mover.")
-                else:
-                    combinados = list(set(labs_destino + labs_origen))
-                    cal_mes[idx_destino]["Laboratorios"] = combinados
-                    cal_mes[idx_origen]["Laboratorios"] = [] 
-                   
-                    actualizar_calendario(db, anio_sel, mes_sel, pd.DataFrame(cal_mes))
-                    st.success(f"✅ ¡Carga movida con éxito del día {dia_origen} al día {dia_destino}!")
-                    time.sleep(1.5)
+                if agregados > 0:
+                    msg = f"✅ {agregados} laboratorios añadidos al día {dia_sel_str}."
+                    if repetidos > 0: msg += f" (⚠️ {repetidos} de ellos ya estaban en otros días)"
+                    st.success(msg)
+                if ignorados:
+                    st.warning(f"⚠️ Se ignoraron por no existir en el Maestro: {', '.join(ignorados)}")
+                if agregados > 0:
+                    time.sleep(2.5)
                     st.rerun()
 
-        st.markdown("**Copiar Planificación Mensual:**")
-        if st.button("📥 Importar y sobreescribir desde el mes anterior", type="primary"):
-            if mes_sel == 1:
-                p_year, p_month = anio_sel - 1, 12
-            else:
-                p_year, p_month = anio_sel, mes_sel - 1
-            
-            prev_doc = db.collection("configuracion_calendario").document(f"{p_year}_{p_month:02d}").get()
-            if prev_doc.exists:
-                prev_dias = prev_doc.to_dict().get("dias", [])
-                labs_sabados = [d.get("Laboratorios", []) for d in prev_dias if d.get("Día") == "Sábado"]
-                labs_semana = [d.get("Laboratorios", []) for d in prev_dias if d.get("Día") in ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]]
-                
-                nuevo_cal = generar_calendario_dinamico(anio_sel, mes_sel, labs_semana, labs_sabados)
-                actualizar_calendario(db, anio_sel, mes_sel, nuevo_cal)
-                st.success("✅ Planificación importada con éxito.")
-                time.sleep(1.5)
-                st.rerun()
-            else:
-                st.error("❌ El mes anterior está vacío en la base de datos.")
-                
         st.divider()
 
-        # ==========================================
-        # Administrador global de logos y laboratorios
-        # ==========================================
-        with st.expander("🖼️ Administrador Global de Logos y Laboratorios (Clic para abrir)", expanded=False):
-            st.markdown("Busca, sube logos o **elimina laboratorios** del sistema y del calendario actual.")
-            logos_actuales_db = obtener_logos_firebase()
-            
-            # Recopilamos todos los laboratorios
-            nombres_visuales_globales = set()
-            for key in logos_actuales_db.keys():
-                nombres_visuales_globales.add(key.replace("_", " "))
-                
-            for dia in cal_mes:
-                labs_dia = dia.get("Laboratorios", [])
-                if isinstance(labs_dia, str):
-                    labs_dia = [l.strip().upper() for l in labs_dia.split(",") if l.strip()]
-                for l in labs_dia:
-                    if l and "DOMINGO" not in str(l).upper():
-                        nombres_visuales_globales.add(l.strip().upper())
-            
-            lista_todos_labs = sorted(list(nombres_visuales_globales))
-            
-            # --- NUEVO: Buscador Interactivo ---
-            texto_busqueda = st.text_input("🔍 Buscar laboratorio (escribe para filtrar):", "").strip().upper()
-            if texto_busqueda:
-                lista_todos_labs = [lab for lab in lista_todos_labs if texto_busqueda in lab]
+        # --- BUSCADOR Y GUARDADO INDIVIDUAL ---
+        col_b1, col_b2 = st.columns([3, 1])
+        busqueda_cal = col_b1.text_input("🔍 Buscar laboratorio a asignar...", key="busqueda_cal").strip().upper()
+        
+        if col_b2.button("💾 Guardar Día en la Nube", type="primary", use_container_width=True):
+            nuevos_labs_dia = sorted(list(st.session_state.labs_del_dia_local))
+            for d in cal_mes:
+                if d.get("Fecha") == fecha_sel_str:
+                    d["Laboratorios"] = nuevos_labs_dia
+                    break
+            actualizar_calendario(db, anio_sel, mes_sel, pd.DataFrame(cal_mes))
+            st.success("✅ ¡Guardado en la Nube!")
+            time.sleep(0.5)
+            st.rerun()
 
-            if not lista_todos_labs:
-                st.info("💡 No se encontraron laboratorios con ese nombre.")
+        col_pendientes, col_asignados = st.columns(2)
+        
+        with col_pendientes:
+            st.markdown(f"""<div style="background-color:#1e1e1e; padding:15px; border-radius:10px; border-top:4px solid #ff4b4b; margin-bottom:15px;">
+                        <h4 style="margin-top:0; margin-bottom:0; color:#ff8080;">🔴 Disponibles para Asignar</h4></div>""", unsafe_allow_html=True)
+            
+            # MOSTRAR EL MAESTRO COMPLETO SIEMPRE (Issue 1)
+            labs_disponibles = lista_todos_labs.copy()
+            if busqueda_cal: labs_disponibles = [l for l in labs_disponibles if busqueda_cal in l]
+            
+            # ORDENACIÓN: Rojos (0) primero, Blancos (1) de último, y ambos alfabéticamente
+            labs_disponibles = sorted(labs_disponibles, key=lambda l: (1 if l in labs_asignados_mes else 0, l))
+            
+            if not labs_disponibles:
+                st.write("*No hay laboratorios en el maestro.*")
             else:
-                cols_logos = st.columns(4) 
-                for idx, lab_name in enumerate(lista_todos_labs):
-                    with cols_logos[idx % 4]:
-                        # Diseño tipo "Tarjeta" para cada laboratorio
-                        st.markdown("""<div style="background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; margin-bottom: 15px;">""", unsafe_allow_html=True)
-                        
-                        lab_id_check = lab_name.replace(" ", "_")
-                        estado_texto = "✅" if lab_id_check in logos_actuales_db and logos_actuales_db[lab_id_check] else "❌"
-                        st.markdown(f"<div style='text-align:center; font-weight:bold; margin-bottom:10px;'>{lab_name} {estado_texto}</div>", unsafe_allow_html=True)
-                        
-                        logo_file = st.file_uploader("Subir", type=["png", "jpg", "jpeg"], key=f"global_logo_{lab_name}", label_visibility="collapsed")
-                        
-                        if logo_file:
-                            with st.spinner("Guardando..."):
-                                guardar_logo_firebase(lab_name, logo_file.getvalue())
-                                st.success("Guardado")
-                                time.sleep(1)
-                                st.rerun()
-                                
-                        # --- NUEVO: Botón de Eliminar ---
-                        if st.button("🗑️ Eliminar Lab", key=f"del_lab_{lab_name}", type="secondary", use_container_width=True):
-                            with st.spinner("Eliminando..."):
-                                # 1. Eliminar logo de Firebase
-                                db.collection("configuracion_logos").document(lab_id_check).delete()
-                                
-                                # 2. Eliminar del calendario del mes actual
-                                hubo_cambios = False
-                                for dia in cal_mes:
-                                    labs_dia = dia.get("Laboratorios", [])
-                                    if isinstance(labs_dia, str):
-                                        labs_dia = [l.strip().upper() for l in labs_dia.split(",") if l.strip()]
-                                    
-                                    if lab_name in labs_dia:
-                                        labs_dia.remove(lab_name)
-                                        dia["Laboratorios"] = labs_dia
-                                        hubo_cambios = True
-                                        
-                                if hubo_cambios:
-                                    actualizar_calendario(db, anio_sel, mes_sel, pd.DataFrame(cal_mes))
-                                    
-                                st.success(f"Eliminado")
-                                time.sleep(1)
-                                st.rerun()
-                        
-                        st.markdown("</div>", unsafe_allow_html=True)
+                for lab in labs_disponibles:
+                    c1, c2 = st.columns([3, 1])
+                    if lab in pendientes_absolutos_mes:
+                        c1.markdown(f"🔴 **{lab}**")
+                    else:
+                        dias_asignados = ", ".join(mapa_asignaciones.get(lab, []))
+                        es_repe_global = len(mapa_asignaciones.get(lab, [])) > 1
+                        etiqueta_repe = " <span style='color:#ffaa00; font-size:12px; font-weight:bold;'>[⚠️ REPETIDO]</span>" if es_repe_global else ""
+                        c1.markdown(f"⚪ {lab}{etiqueta_repe} <br><span style='color:gray; font-size:12px;'>(Asignado el día {dias_asignados})</span>", unsafe_allow_html=True)
+                    
+                    # Botón inteligente: si ya está en la lista de hoy, se deshabilita.
+                    if lab in st.session_state.labs_del_dia_local:
+                        c2.button("✔️ En lista", key=f"add_dis_{lab}_{fecha_sel_str}", disabled=True, use_container_width=True)
+                    else:
+                        c2.button("➕ Añadir", key=f"add_{lab}_{fecha_sel_str}", on_click=agregar_al_dia, args=(lab,), use_container_width=True)
 
-    # ==========================================
-    # REQUERIMIENTO 2 - PESTAÑA 3: TABLA RESUMEN DEL MES
-    # ==========================================
+        with col_asignados:
+            st.markdown(f"""<div style="background-color:#14231c; padding:15px; border-radius:10px; border-top:4px solid #10b981; margin-bottom:15px;">
+                        <h4 style="margin-top:0; margin-bottom:0; color:#52d681;">✅ Asignados al {dia_sel:02d}/{mes_sel:02d}</h4></div>""", unsafe_allow_html=True)
+            
+            if st.session_state.labs_del_dia_local:
+                if st.button("🗑️ Quitar Todos los de este Día", key=f"clear_all_{fecha_sel_str}", type="secondary", use_container_width=True):
+                    st.session_state.labs_del_dia_local.clear()
+                    st.rerun()
+                st.markdown("---")
+
+            asignados_lista = sorted(list(st.session_state.labs_del_dia_local))
+            if busqueda_cal: asignados_lista = [l for l in asignados_lista if busqueda_cal in l]
+                
+            if not asignados_lista:
+                st.write("*Ninguno asignado a este día.*")
+            else:
+                for lab in asignados_lista:
+                    c1, c2 = st.columns([3, 1])
+                    
+                    # Identificar si está repetido (Issue 3)
+                    dias_de_este_lab = mapa_asignaciones.get(lab, [])
+                    if len(dias_de_este_lab) > 1:
+                        otros_dias = [d for d in dias_de_este_lab if d != dia_sel_str]
+                        c1.markdown(f"✅ **{lab}** <br><span style='color:#ffaa00; font-size:12px;'>⚠️ Repetido (También el {', '.join(otros_dias)})</span>", unsafe_allow_html=True)
+                    else:
+                        c1.markdown(f"✅ **{lab}**")
+                        
+                    c2.button("❌ Quitar", key=f"rm_{lab}_{fecha_sel_str}", on_click=quitar_del_dia, args=(lab,), use_container_width=True)
+
+    # PESTAÑA 3: RESUMEN Y MAESTRO GLOBAL CONECTADO
     with tab3:
         st.subheader(f"📊 Cronograma Consolidado Tipo Tabla ({mes_sel:02d}/{anio_sel})")
         cal_mes_tabla = obtener_calendario(db, anio_sel, mes_sel)
         
         if cal_mes_tabla:
-            # Estructuramos la información limpia para mostrar en formato lineal
             datos_tabla_resumen = []
             for d in cal_mes_tabla:
                 labs = d.get("Laboratorios", [])
-                labs_str = ", ".join(labs) if isinstance(labs, list) else str(labs)
-                if not labs_str.strip(): labs_str = "SÍN PLANIFICAR"
-                
-                # Reformateamos la fecha para que esté en formato latino (DD-MM-YYYY)
+                labs_str = ", ".join(labs) if labs else "SÍN PLANIFICAR"
                 fecha_iso = d.get("Fecha", "")
-                try:
-                    fecha_latina = datetime.strptime(fecha_iso, "%Y-%m-%d").strftime("%d-%m-%Y")
-                except:
-                    fecha_latina = fecha_iso
+                try: fecha_latina = datetime.strptime(fecha_iso, "%Y-%m-%d").strftime("%d-%m-%Y")
+                except: fecha_latina = fecha_iso
 
                 datos_tabla_resumen.append({
                     "Fecha": fecha_latina,
@@ -936,120 +793,142 @@ elif opcion == "Ver Reportes":
                 })
             
             df_resumen_mes = pd.DataFrame(datos_tabla_resumen)
-            
-            # Aplicamos diseño oscuro uniforme
-            st.dataframe(
-                df_resumen_mes.style.set_properties(**{
-                    'border': '1px solid #3a3a3a', 'color': '#ffffff', 'background-color': '#111111'
-                }), 
-                use_container_width=True, 
-                hide_index=True
-            )
+            st.dataframe(df_resumen_mes.style.set_properties(**{'border': '1px solid #3a3a3a', 'color': '#ffffff', 'background-color': '#111111'}), use_container_width=True, hide_index=True)
         else:
             st.info("No hay datos de planificación para este mes.")
+            
+        st.divider()
+        st.subheader("🗂️ Maestro Global de Laboratorios del Sistema")
+        st.markdown("Cualquier laboratorio agregado o eliminado aquí se verá reflejado inmediatamente en las planificaciones y pantallas de carga de todo el sistema.")
+        
+        with st.form("form_add_maestro", clear_on_submit=True):
+            col_in1, col_in2 = st.columns([3, 1])
+            # Cambiamos el texto de ayuda para que sea más claro
+            nuevo_lab_input = col_in1.text_input("➕ Nombre del LAB:").strip().upper()
+            submit_btn = col_in2.form_submit_button("Agregar al Maestro", use_container_width=True)
+            
+            if submit_btn and nuevo_lab_input:
+                # Cortamos el texto por los guiones y limpiamos espacios vacíos
+                labs_a_agregar = [l.strip() for l in nuevo_lab_input.split("-") if l.strip()]
+                
+                # Guardamos cada uno iterando sobre la lista
+                for lab in labs_a_agregar:
+                    doc_id_maestro = lab.replace(" ", "_")
+                    db.collection("configuracion_logos").document(doc_id_maestro).set({"logo_b64": ""})
+                
+                st.success(f"🎉 ¡{len(labs_a_agregar)} laboratorio(s) guardado(s) con éxito!")
+                time.sleep(1)
+                st.rerun()
+        # --- NUEVO CONTADOR Y BUSCADOR ---
+        logos_maestro = obtener_logos_firebase()
+        labs_maestro_lista = sorted(list(set(k.replace("_", " ") for k in logos_maestro.keys())))
+        
+        st.markdown(f"#### 🔬 Laboratorios Registrados: **{len(labs_maestro_lista)}** en total")
+        
+        busqueda_mstr = st.text_input("🔍 Buscar en maestro...", key="search_mstr").strip().upper()
+        labs_filtrados = [l for l in labs_maestro_lista if busqueda_mstr in l] if busqueda_mstr else labs_maestro_lista
+        
+        if labs_filtrados:
+            for l_maestro in labs_filtrados:
+                cm1, cm2 = st.columns([5, 1])
+                cm1.markdown(f"🧪 **{l_maestro}**")
+                if cm2.button("🗑️ Eliminar", key=f"del_mstr_{l_maestro.replace(' ','_')}", use_container_width=True):
+                    db.collection("configuracion_logos").document(l_maestro.replace(" ", "_")).delete()
+                    
+                    # Limpieza reactiva en el mes actual para evitar huérfanos
+                    for dia in cal_mes:
+                        if l_maestro in dia.get("Laboratorios", []):
+                            dia["Laboratorios"].remove(l_maestro)
+                    actualizar_calendario(db, anio_sel, mes_sel, cal_mes)
+                    
+                    st.success("Eliminado con éxito.")
+                    time.sleep(0.5)
+                    st.rerun()
+        else:
+            if busqueda_mstr:
+                st.warning("No se encontraron laboratorios con ese nombre.")
+            else:
+                st.info("El maestro de laboratorios se encuentra vacío.")
 
-    # ==========================================
-    # REQUERIMIENTO 3 - PESTAÑA 4: RASTREO BI-MES POR LABORATORIO
-    # ==========================================
+    # PESTAÑA 4: RASTREO BI-MES
     with tab4:
         st.subheader("🔍 Matriz de Control de Cargas (Mes Actual y Pasado)")
-        st.markdown("Verifica rápidamente qué sucursales han subido información de cada laboratorio.")
-        
-        # Determinamos las variables temporales del mes actual de ejecución y el anterior
         hoy_ejecucion = datetime.now()
         str_mes_actual = f"{hoy_ejecucion.year}-{hoy_ejecucion.month:02d}"
-        
         primer_dia_actual = hoy_ejecucion.replace(day=1)
         fecha_mes_pasado = primer_dia_actual - timedelta(days=1)
         str_mes_pasado = f"{fecha_mes_pasado.year}-{fecha_mes_pasado.month:02d}"
         
-        # Filtramos la lista completa de reportes recuperada de Firebase
-        reportes_bi_mes = [
-            r for r in lista_reportes_completa 
-            if r.get("fecha_registro", "").startswith(str_mes_actual) or r.get("fecha_registro", "").startswith(str_mes_pasado)
-        ]
+        reportes_bi_mes = [r for r in lista_reportes_completa if r.get("fecha_registro", "").startswith(str_mes_actual) or r.get("fecha_registro", "").startswith(str_mes_pasado)]
         
-        # Mapeamos: { LABORATORIO: { "Actual": {sedes}, "Pasado": {sedes} } }
         matriz_cargas = {}
         for rep in reportes_bi_mes:
             lab = rep.get("laboratorio", "").strip().upper()
             sede = rep.get("sede", "").strip().upper()
             fecha_reg = rep.get("fecha_registro", "")
-            
             if not lab: continue
-            if lab not in matriz_cargas:
-                matriz_cargas[lab] = {"Actual": set(), "Pasado": set()}
-            
-            if fecha_reg.startswith(str_mes_actual):
-                matriz_cargas[lab]["Actual"].add(sede)
-            elif fecha_reg.startswith(str_mes_pasado):
-                matriz_cargas[lab]["Pasado"].add(sede)
+            if lab not in matriz_cargas: matriz_cargas[lab] = {"Actual": set(), "Pasado": set()}
+            if fecha_reg.startswith(str_mes_actual): matriz_cargas[lab]["Actual"].add(sede)
+            elif fecha_reg.startswith(str_mes_pasado): matriz_cargas[lab]["Pasado"].add(sede)
         
-        # Transformamos la matriz en un DataFrame limpio
-        filas_tabla_rastreo = []
+        filas_actual = []
+        filas_pasado = []
+        
         for lab, meses in matriz_cargas.items():
             sedes_actual = meses["Actual"]
             sedes_pasado = meses["Pasado"]
-            
-            # Calculamos las sedes que faltan en base a LISTA_SEDES global
             faltan_actual = [s for s in LISTA_SEDES if s not in sedes_actual]
             faltan_pasado = [s for s in LISTA_SEDES if s not in sedes_pasado]
 
-            filas_tabla_rastreo.append({
+            # Llenamos la tabla del mes actual
+            filas_actual.append({
                 "Laboratorio / Marca": lab,
-                f"✅ Cargaron - Mes Actual ({hoy_ejecucion.month:02d}/{hoy_ejecucion.year})": ", ".join(sorted(list(sedes_actual))) if sedes_actual else "Ninguna",
-                f"❌ FALTAN - Mes Actual ({hoy_ejecucion.month:02d}/{hoy_ejecucion.year})": ", ".join(sorted(faltan_actual)) if faltan_actual else "Todas al día",
-                f"✅ Cargaron - Mes Pasado ({fecha_mes_pasado.month:02d}/{fecha_mes_pasado.year})": ", ".join(sorted(list(sedes_pasado))) if sedes_pasado else "Ninguna",
-                f"❌ FALTAN - Mes Pasado ({fecha_mes_pasado.month:02d}/{fecha_mes_pasado.year})": ", ".join(sorted(faltan_pasado)) if faltan_pasado else "Todas al día"
+                f"✅ Cargaron": ", ".join(sorted(list(sedes_actual))) if sedes_actual else "Ninguna",
+                f"❌ FALTAN": ", ".join(sorted(faltan_actual)) if faltan_actual else "Todas al día"
             })
             
-        if filas_tabla_rastreo:
-            df_rastreo = pd.DataFrame(filas_tabla_rastreo).sort_values(by="Laboratorio / Marca")
-            st.dataframe(
-                df_rastreo.style.set_properties(**{
-                    'border': '1px solid #3a3a3a', 'color': '#ffffff', 'background-color': '#111111'
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
+            # Llenamos la tabla del mes pasado
+            filas_pasado.append({
+                "Laboratorio / Marca": lab,
+                f"✅ Cargaron": ", ".join(sorted(list(sedes_pasado))) if sedes_pasado else "Ninguna",
+                f"❌ FALTAN": ", ".join(sorted(faltan_pasado)) if faltan_pasado else "Todas al día"
+            })
+            
+        st.divider()
+        
+        # --- TABLA 1: MES ACTUAL ---
+        st.markdown(f"#### 📅 Mes Actual ({hoy_ejecucion.month:02d}/{hoy_ejecucion.year})")
+        if filas_actual:
+            st.dataframe(pd.DataFrame(filas_actual).sort_values(by="Laboratorio / Marca").style.set_properties(**{'border': '1px solid #3a3a3a', 'color': '#ffffff', 'background-color': '#111111'}), use_container_width=True, hide_index=True)
         else:
-            st.info("No se han detectado cargas operativas en la base de datos para el período actual ni el anterior.")
-   # ==========================================
-    # PESTAÑA 5: MODO APERTURA GLOBAL (ESTÉTICA ORIGINAL OPTIMIZADA)
-    # ==========================================
+            st.info("Sin registros para el mes actual.")
+
+        st.write("") # Espaciador
+
+        # --- TABLA 2: MES PASADO ---
+        st.markdown(f"#### 📅 Mes Pasado ({fecha_mes_pasado.month:02d}/{fecha_mes_pasado.year})")
+        if filas_pasado:
+            st.dataframe(pd.DataFrame(filas_pasado).sort_values(by="Laboratorio / Marca").style.set_properties(**{'border': '1px solid #3a3a3a', 'color': '#ffffff', 'background-color': '#111111'}), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sin registros para el mes pasado.")
+
+    # PESTAÑA 5: MODO APERTURA
     with tab5:
         st.subheader("🚀 Gestión de Apertura (Global)")
-        
         sede_apertura = st.selectbox("🏢 Selecciona la Sede para Apertura:", LISTA_SEDES, key="sede_ap")
         
-        # --- 1. MEMORIA LOCAL (EVITA EL PARPADEO DE PANTALLA) ---
         if "sede_activa" not in st.session_state or st.session_state.sede_activa != sede_apertura:
             st.session_state.sede_activa = sede_apertura
             doc_apertura = db.collection("estado_apertura").document(sede_apertura).get()
-            procesados_nube = doc_apertura.to_dict().get("procesados", []) if doc_apertura.exists else []
-            st.session_state.procesados_locales = set(procesados_nube)
+            st.session_state.procesados_locales = set(doc_apertura.to_dict().get("procesados", []) if doc_apertura.exists else [])
             
-        # --- 2. EXTRAER CALENDARIO ---
-        cal_mes_apertura = obtener_calendario(db, anio_sel, mes_sel)
-        labs_del_mes = set()
-        if cal_mes_apertura:
-            for dia in cal_mes_apertura:
-                labs_dia = dia.get("Laboratorios", [])
-                if isinstance(labs_dia, str):
-                    labs_dia = [l.strip().upper() for l in labs_dia.split(",") if l.strip()]
-                for l in labs_dia:
-                    if l and "DOMINGO" not in str(l).upper():
-                        labs_del_mes.add(l.strip().upper())
-        labs_del_mes = sorted(list(labs_del_mes))
+        # Obtenemos TODOS los laboratorios directamente del Maestro Global
+        logos_maestro_ap = obtener_logos_firebase()
+        labs_del_mes = sorted(list(set(k.replace("_", " ") for k in logos_maestro_ap.keys())))
         
-        # --- 3. FUNCIONES CALLBACK (Se ejecutan en segundo plano sin reiniciar todo) ---
-        def mover_a_procesado(lab):
-            st.session_state.procesados_locales.add(lab)
+        def mover_a_procesado(lab): st.session_state.procesados_locales.add(lab)
+        def regresar_a_pendiente(lab): st.session_state.procesados_locales.discard(lab)
             
-        def regresar_a_pendiente(lab):
-            st.session_state.procesados_locales.discard(lab)
-            
-        # --- 4. MÉTRICAS ---
         total_labs = len(labs_del_mes)
         procesados_del_mes = [lab for lab in st.session_state.procesados_locales if lab in labs_del_mes]
         cant_procesados = len(procesados_del_mes)
@@ -1065,117 +944,85 @@ elif opcion == "Ver Reportes":
             st.progress(porcentaje / 100)
             
         st.divider()
-
-        # --- 5. BUSCADOR Y GUARDADO EN LA NUBE ---
         col_b1, col_b2 = st.columns([3, 1])
         busqueda = col_b1.text_input("🔍 Buscar laboratorio...", "").strip().upper()
         
-        # El botón maestro para sincronizar con el programa de escritorio
-        if col_b2.button("💾 Guardar Cambios en la Nube", type="primary", use_container_width=True):
-            with st.spinner("Sincronizando con el escritorio..."):
-                db.collection("estado_apertura").document(sede_apertura).set({
-                    "procesados": list(st.session_state.procesados_locales)
-                }, merge=True)
-                st.success("¡Guardado exitosamente!")
-                
-        st.info("💡 **Tip:** Mueve los laboratorios con los botones de abajo. **No olvides darle a 'Guardar Cambios en la Nube'** cuando termines.")
+        if col_b2.button("💾 Guardar Cambios en la Nube", type="primary", use_container_width=True, key="save_ap"):
+            db.collection("estado_apertura").document(sede_apertura).set({"procesados": list(st.session_state.procesados_locales)}, merge=True)
+            st.success("¡Guardado exitosamente!")
 
-        # --- 6. LA ESTÉTICA DE DOS COLUMNAS ---
         col_pendientes, col_procesados = st.columns(2)
-        
         with col_pendientes:
-            st.markdown(f"""<div style="background-color:#1e1e1e; padding:15px; border-radius:10px; border-top:4px solid #ff4b4b; margin-bottom:15px;">
-                        <h4 style="margin-top:0; margin-bottom:0; color:#ff8080;">🔴 Pendientes</h4></div>""", unsafe_allow_html=True)
-            
+            st.markdown("""<div style="background-color:#1e1e1e; padding:15px; border-radius:10px; border-top:4px solid #ff4b4b; margin-bottom:15px;"><h4 style="margin-top:0; color:#ff8080;">🔴 Pendientes</h4></div>""", unsafe_allow_html=True)
             pendientes_lista = [l for l in labs_del_mes if l not in st.session_state.procesados_locales]
             if busqueda: pendientes_lista = [l for l in pendientes_lista if busqueda in l]
-                
-            if not pendientes_lista:
-                st.success("¡Todo listo por aquí!")
-            else:
-                for lab in pendientes_lista:
-                    c1, c2 = st.columns([3, 1])
-                    c1.markdown(f"🔬 **{lab}**")
-                    # Usamos on_click para evitar el lag de recarga
-                    c2.button("✔️ Listo", key=f"btn_p_{lab}_{sede_apertura}", on_click=mover_a_procesado, args=(lab,), use_container_width=True)
+            for lab in pendientes_lista:
+                c1, c2 = st.columns([3, 1])
+                c1.markdown(f"🔬 **{lab}**")
+                c2.button("✔️ Listo", key=f"btn_p_{lab}_{sede_apertura}", on_click=mover_a_procesado, args=(lab,), use_container_width=True)
 
         with col_procesados:
-            st.markdown(f"""<div style="background-color:#14231c; padding:15px; border-radius:10px; border-top:4px solid #10b981; margin-bottom:15px;">
-                        <h4 style="margin-top:0; margin-bottom:0; color:#52d681;">✅ Procesados</h4></div>""", unsafe_allow_html=True)
-            
-            procesados_lista = sorted(list(st.session_state.procesados_locales))
+            st.markdown("""<div style="background-color:#14231c; padding:15px; border-radius:10px; border-top:4px solid #10b981; margin-bottom:15px;"><h4 style="margin-top:0; color:#52d681;">✅ Procesados</h4></div>""", unsafe_allow_html=True)
+            procesados_lista = sorted([l for l in st.session_state.procesados_locales if l in labs_del_mes])
             if busqueda: procesados_lista = [l for l in procesados_lista if busqueda in l]
-                
-            if not procesados_lista:
-                st.write("Aún no hay procesados.")
-            else:
-                for lab in procesados_lista:
-                    c1, c2 = st.columns([3, 1])
-                    badge = "📅" if lab in labs_del_mes else "<span style='color:gray; font-size:12px;'>(Extra)</span>"
-                    c1.markdown(f"✅ {lab} {badge}", unsafe_allow_html=True)
-                    # Usamos on_click para evitar el lag de recarga
-                    c2.button("❌ Quitar", key=f"btn_q_{lab}_{sede_apertura}", on_click=regresar_a_pendiente, args=(lab,), use_container_width=True)
+            for lab in procesados_lista:
+                c1, c2 = st.columns([3, 1])
+                c1.markdown(f"✅ {lab}")
+                c2.button("❌ Quitar", key=f"btn_q_{lab}_{sede_apertura}", on_click=regresar_a_pendiente, args=(lab,), use_container_width=True)
 
-
-    # ==========================================
-    # PESTAÑA 6: CONTROL DE INVENTARIO Y ALERTAS (OPTIMIZADO)
-    # ==========================================
+    # PESTAÑA 6: CONTROL DE INVENTARIO (FILTRADO GLOBAL ANTIGUO SIN FALLOS DE PARSEO)
     with tab6:
         st.subheader("📦 Control de Inventario Cruzado entre Sedes")
-        st.markdown("Este módulo analiza los artículos para evitar sobrepasar el inventario de los proveedores. *Los reportes se vencen automáticamente a las 3 horas de cargados.*")
+        st.markdown("Este módulo analiza los artículos para evitar sobrepasar el inventario de los proveedores. *Los reportes se vencen automáticamente a las 24 horas de cargados.*")
 
         ahora_local = datetime.utcnow() - timedelta(hours=4)
         reportes_activos = {}
         documentos_a_limpiar_inv = []
         
-        for r in lista_reportes:
-            fecha_reg_str = r.get("fecha_registro_inv", r.get("fecha_registro"))
+        for r in lista_reportes_completa:
+            # Usar fecha_sistema de prioridad (inmune al forzado de mes)
+            fecha_reg_str = r.get("fecha_sistema", r.get("fecha_registro_inv", r.get("fecha_registro")))
             sede_lab = f"{r.get('sede','').strip().upper()}_{r.get('laboratorio','').strip().upper()}"
-            doc_id_actual = f"{r.get('sede','').lower().replace(' ', '_')}_{r.get('laboratorio','').lower().replace(' ', '_')}"
+            doc_id_actual = r.get("id_real_fb")
             
             tiene_inventario = len(r.get("detalles_items", [])) > 0
             
             if tiene_inventario and fecha_reg_str:
-                try:
-                    fecha_doc = datetime.strptime(fecha_reg_str, "%Y-%m-%d %H:%M:%S")
-                    
-                    # Usamos el reloj local sincronizado para medir la diferencia
+                fecha_doc = None
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+                    try:
+                        fecha_doc = datetime.strptime(fecha_reg_str, fmt)
+                        break
+                    except: continue
+                
+                if fecha_doc:
                     diferencia_horas = (ahora_local - fecha_doc).total_seconds() / 3600
                     
-                    if diferencia_horas <= 3.0:
-                        if sede_lab not in reportes_activos or \
-                           datetime.strptime(reportes_activos[sede_lab].get("fecha_registro_inv", "2000-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S") < fecha_doc:
+                    # CLAVE: 0 <= diferencia_horas evita que fechas lanzadas al futuro se queden vivas eternamente
+                    if 0 <= diferencia_horas <= 24.0:
+                        if sede_lab not in reportes_activos or datetime.strptime(reportes_activos[sede_lab].get("fecha_sistema", reportes_activos[sede_lab].get("fecha_registro", "2000-01-01 00:00:00")), "%Y-%m-%d %H:%M:%S") < fecha_doc:
                             reportes_activos[sede_lab] = r
                     else:
-                        # Si realmente pasaron 3 horas, vacía SOLO esta sede específica
                         documentos_a_limpiar_inv.append(doc_id_actual)
-                except:
-                    reportes_activos[sede_lab] = r
+                else:
+                    documentos_a_limpiar_inv.append(doc_id_actual)
             elif tiene_inventario:
                 reportes_activos[sede_lab] = r
         
-        # Ejecuta la limpieza de Firebase de manera individual, sin afectar a los demás
         if documentos_a_limpiar_inv:
             for doc_id_borrar in documentos_a_limpiar_inv:
-                try:
-                    db.collection("reportes_comparador").document(doc_id_borrar).update({"detalles_items": []})
-                except:
-                    pass
+                try: db.collection("reportes_comparador").document(doc_id_borrar).update({"detalles_items": []})
+                except: pass
                     
         lista_activos = list(reportes_activos.values())
-        
-        # --- 2. FILTRAR POR LABORATORIO ---
-        
         laboratorios_disponibles = sorted(list(set([r.get("laboratorio", "").strip().upper() for r in lista_activos if r.get("laboratorio")])))
         
         if not laboratorios_disponibles:
-            st.info("⏰ No hay cargas de inventario activas en este momento.")
+            st.info("⏰ No hay cargas de inventario activas de las últimas 24 horas.")
         else:
-            lab_seleccionado = st.selectbox("🧪 Selecciona el Laboratorio a Auditar:", laboratorios_disponibles)
-            
+            lab_seleccionado = st.selectbox("🧪 Selecciona el Laboratorio a Auditar:", laboratorios_disponibles, key="sb_inv")
             reportes_filtrados_lab = [r for r in lista_activos if r.get("laboratorio", "").strip().upper() == lab_seleccionado]
             
-            # --- 3. CONSOLIDACIÓN INTELIGENTE DE ARTÍCULOS (Anti-Errores) ---
             consolidado = {}
             sedes_detectadas = set()
             
@@ -1189,24 +1036,12 @@ elif opcion == "Ver Reportes":
                     desc = str(item.get("descripcion", "")).strip()
                     inv = int(item.get("inventario", 0))
                     pedida = int(item.get("cantidad", 0))
-                    
                     llave = (cod, prov)
                     
                     if llave not in consolidado:
-                        # Si es la primera vez que vemos este código, guardamos su descripción y su inventario
-                        consolidado[llave] = {
-                            "Código de Barra": cod,
-                            "Descripción": desc,
-                            "Proveedor": prov,
-                            "Inv. Disp.": inv
-                        }
+                        consolidado[llave] = {"Código de Barra": cod, "Descripción": desc, "Proveedor": prov, "Inv. Disp.": inv}
                     else:
-                        # Si el código ya existe, mantenemos la PRIMERA descripción.
-                        # Pero si el nuevo inventario reportado es MENOR, nos quedamos con el menor (más seguro)
-                        if inv < consolidado[llave]["Inv. Disp."]:
-                            consolidado[llave]["Inv. Disp."] = inv
-                            
-                    # Sumamos lo pedido por esta sede
+                        if inv < consolidado[llave]["Inv. Disp."]: consolidado[llave]["Inv. Disp."] = inv
                     consolidado[llave][sede_actual] = consolidado[llave].get(sede_actual, 0) + pedida
             
             if not consolidado:
@@ -1215,91 +1050,181 @@ elif opcion == "Ver Reportes":
                 df_pivot = pd.DataFrame(list(consolidado.values()))
                 sedes_cols = sorted(list(sedes_detectadas))
                 
-                # Rellenar con 0 si una sede no pidió este producto específico
                 for s in sedes_cols:
-                    if s not in df_pivot.columns:
-                        df_pivot[s] = 0
+                    if s not in df_pivot.columns: df_pivot[s] = 0
                     df_pivot[s] = df_pivot[s].fillna(0).astype(int)
                 
-                # 4. Cálculos y orden de columnas
                 df_pivot["Total Solicitado"] = df_pivot[sedes_cols].sum(axis=1)
                 df_pivot["Diferencia"] = df_pivot["Inv. Disp."] - df_pivot["Total Solicitado"]
                 
-                # Reglas de Alertas
                 cond_excedido = df_pivot["Total Solicitado"] > df_pivot["Inv. Disp."]
                 cond_precaucion = (df_pivot["Total Solicitado"] >= (df_pivot["Inv. Disp."] * 0.90)) & (~cond_excedido) & (df_pivot["Total Solicitado"] > 0)
                 
-                df_pivot["Estatus"] = np.where(cond_excedido, "🔴 EXCEDIDO", 
-                                      np.where(cond_precaucion, "🟡 PRECAUCIÓN", "✅ OK"))
+                df_pivot["Estatus"] = np.where(cond_excedido, "🔴 EXCEDIDO", np.where(cond_precaucion, "🟡 PRECAUCIÓN", "✅ OK"))
+                df_pivot["Orden_Estatus"] = np.where(df_pivot["Estatus"] == "🔴 EXCEDIDO", 1, np.where(df_pivot["Estatus"] == "🟡 PRECAUCIÓN", 2, 3))
                 
-                df_pivot["Orden_Estatus"] = np.where(df_pivot["Estatus"] == "🔴 EXCEDIDO", 1,
-                                            np.where(df_pivot["Estatus"] == "🟡 PRECAUCIÓN", 2, 3))
-                
-                # --- MÉTRICAS ---
                 st.markdown(f"##### 📊 Resumen de Pedidos Cruzados: {lab_seleccionado}")
                 c_met1, c_met2, c_met3 = st.columns(3)
-                total_items = len(df_pivot)
-                items_excedidos = len(df_pivot[df_pivot["Estatus"] == "🔴 EXCEDIDO"])
-                items_precaucion = len(df_pivot[df_pivot["Estatus"] == "🟡 PRECAUCIÓN"])
+                c_met1.metric("📦 PRODUCTOS", f"{len(df_pivot)}")
+                c_met2.metric("🚨 ALERTAS CRÍTICAS", f"{len(df_pivot[df_pivot['Estatus'] == '🔴 EXCEDIDO'])}")
+                c_met3.metric("⚠️ ALERTAS PRECAUCIÓN", f"{len(df_pivot[df_pivot['Estatus'] == '🟡 PRECAUCIÓN'])}")
                 
-                c_met1.metric("📦 PRODUCTOS", f"{total_items}")
-                c_met2.metric("🚨 ALERTAS CRÍTICAS", f"{items_excedidos}")
-                c_met3.metric("⚠️ ALERTAS PRECAUCIÓN", f"{items_precaucion}")
+                col_b1_i, col_b2_i = st.columns([2, 1])
+                busqueda_cod = col_b1_i.text_input("🔍 Buscar por Producto o Código:", "", key="b_inv_c")
+                mostrar_alertas = col_b2_i.checkbox("⚠️ Ver solo alertas", value=False, key="ch_inv_a")
                 
-                # Buscador y Filtro
-                col_b1, col_b2 = st.columns([2, 1])
-                with col_b1:
-                    busqueda_cod = st.text_input("🔍 Buscar por Producto, Código o Proveedor:", "")
-                with col_b2:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    mostrar_alertas = st.checkbox("⚠️ Ver solo alertas", value=False)
-                
-                if mostrar_alertas:
-                    df_pivot = df_pivot[df_pivot["Estatus"].isin(["🔴 EXCEDIDO", "🟡 PRECAUCIÓN"])]
-                    
+                if mostrar_alertas: df_pivot = df_pivot[df_pivot["Estatus"].isin(["🔴 EXCEDIDO", "🟡 PRECAUCIÓN"])]
                 if busqueda_cod:
                     b = busqueda_cod.upper()
-                    df_pivot = df_pivot[df_pivot['Código de Barra'].str.contains(b) | 
-                                        df_pivot['Descripción'].str.upper().str.contains(b) | 
-                                        df_pivot['Proveedor'].str.upper().str.contains(b)]
+                    df_pivot = df_pivot[df_pivot['Código de Barra'].str.contains(b) | df_pivot['Descripción'].str.upper().str.contains(b)]
                 
-                # --- ORDENAMIENTO DE FILAS ---
                 df_pivot = df_pivot.sort_values(by=["Orden_Estatus", "Proveedor", "Diferencia"], ascending=[True, True, True])
-                
-                # --- ORDENAMIENTO DE COLUMNAS (Inv. Disp. al lado del Total) ---
                 columnas_ordenadas = ["Estatus", "Código de Barra", "Descripción", "Proveedor"] + sedes_cols + ["Total Solicitado", "Inv. Disp.", "Diferencia"]
                 df_pivot = df_pivot[columnas_ordenadas]
                 
-                # --- DISEÑO VISUAL ---
                 def colorear_filas_inventario(row):
-                    if row["Estatus"] == "🔴 EXCEDIDO":
-                        return ['background-color: #421212; color: #ff8080; font-weight: bold'] * len(row)
-                    elif row["Estatus"] == "🟡 PRECAUCIÓN":
-                        return ['background-color: #423812; color: #ffdd80; font-weight: bold'] * len(row)
+                    if row["Estatus"] == "🔴 EXCEDIDO": return ['background-color: #421212; color: #ff8080; font-weight: bold'] * len(row)
+                    elif row["Estatus"] == "🟡 PRECAUCIÓN": return ['background-color: #423812; color: #ffdd80; font-weight: bold'] * len(row)
                     return [''] * len(row)
                 
-                st.dataframe(
-                    df_pivot.style.apply(colorear_filas_inventario, axis=1)\
-                                  .format({"Inv. Disp.": "{:,.0f}", "Total Solicitado": "{:,.0f}", "Diferencia": "{:,.0f}"}),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=450
-                )
+                st.dataframe(df_pivot.style.apply(colorear_filas_inventario, axis=1).format({"Inv. Disp.": "{:,.0f}", "Total Solicitado": "{:,.0f}", "Diferencia": "{:,.0f}"}), use_container_width=True, hide_index=True, height=450)
 
-                # --- 4. BOTÓN DE DESCARGA LIMPIA ---
-                # Quitamos Estatus, Orden_Estatus (si no lo ocultamos) y Diferencia para el Excel descargable
-                columnas_a_quitar = ["Estatus", "Orden_Estatus", "Diferencia"]
-                df_descarga = df_pivot.drop(columns=[col for col in columnas_a_quitar if col in df_pivot.columns])
-                csv = df_descarga.to_csv(index=False).encode('utf-8-sig')
+                df_descarga = df_pivot.drop(columns=[col for col in ["Estatus", "Orden_Estatus", "Diferencia"] if col in df_pivot.columns])
+                st.download_button(label=f"📥 Descargar Cuadro {lab_seleccionado}", data=df_descarga.to_csv(index=False).encode('utf-8-sig'), file_name=f"Consolidado_{lab_seleccionado}.csv", mime="text/csv", type="primary")
+    # PESTAÑA 7: CONTROL DE DESCUENTOS POR LABORATORIO
+    # PESTAÑA 7: CONTROL DE DESCUENTOS POR LABORATORIO
+    with tab7:
+        st.subheader(f"💰 Control Mensual de Descuentos ({mes_sel:02d}/{anio_sel})")
+        st.markdown("Visualización de los ahorros obtenidos por laboratorio, incluyendo totales en dólares y métricas de porcentajes.")
+        
+        if db is not None:
+            mes_busqueda = f"{anio_sel}-{mes_sel:02d}"
+            
+            with st.spinner("Consultando historial de descuentos..."):
+                docs_desc = db.collection("historial_descuentos").stream()
                 
-                st.download_button(
-                    label=f"📥 Descargar Cuadro {lab_seleccionado} (Sin Alertas)",
-                    data=csv,
-                    file_name=f"Consolidado_{lab_seleccionado}_{datetime.now().strftime('%d_%m_%H%M')}.csv",
-                    mime="text/csv",
-                    type="primary"
-                )                
-                 
+            datos_descuentos = []
+            detalles_proveedores_dict = {} # Diccionario para guardar el detalle por proveedor
+            
+            for doc in docs_desc:
+                data = doc.to_dict()
+                lab = data.get("laboratorio", doc.id)
+                proveedores = data.get("proveedores", {})
+                
+                total_usd_lab = 0.0
+                porcentajes_lab = []
+                ultimo_fecha_lab = None
+                ultimo_porc_aplicado = 0.0
+                
+                lista_prov_lab = [] # Lista temporal para los proveedores de este laboratorio
+                
+                for prov, prov_data in proveedores.items():
+                    # 1. Extraer los porcentajes globales y registrar para el desglose
+                    cadena = prov_data.get("ultimo_descuento_cadena", [])
+                    desc_efectivo = sum(cadena) if isinstance(cadena, list) else 0.0
+                    
+                    lista_prov_lab.append({
+                        "Proveedor": prov,
+                        "Descuento Aplicado": f"{int(round(desc_efectivo))} %"
+                    })
+                    
+                    if desc_efectivo > 0:
+                        porcentajes_lab.append(desc_efectivo)
+                        
+                    # 2. Extraer el dinero ahorrado (solo si existe en el mes filtrado)
+                    meses_data = prov_data.get("meses", {})
+                    if mes_busqueda in meses_data:
+                        mes_info = meses_data[mes_busqueda]
+                        total_usd_lab += float(mes_info.get("total_obtenido", 0.0))
+                        
+                    # 3. Buscar la fecha más reciente para determinar el "Último Descuento" histórico
+                    for m, m_info in meses_data.items():
+                        fecha_str = m_info.get("ultima_fecha", "")
+                        if fecha_str:
+                            try:
+                                fecha_obj = datetime.strptime(fecha_str, "%Y-%m-%d %H:%M:%S")
+                                if ultimo_fecha_lab is None or fecha_obj > ultimo_fecha_lab:
+                                    ultimo_fecha_lab = fecha_obj
+                                    ultimo_porc_aplicado = desc_efectivo
+                            except: pass
+                            
+                # Guardamos los proveedores en el diccionario usando el nombre del lab como llave
+                detalles_proveedores_dict[lab] = lista_prov_lab
+                            
+                # Mostrar en la tabla si tiene dinero ahorrado en este mes OR si al menos tiene registro de porcentajes
+                if total_usd_lab > 0 or len(porcentajes_lab) > 0 or len(proveedores) > 0:
+                    datos_descuentos.append({
+                        "Laboratorio": lab,
+                        "Total Descuento ($)": total_usd_lab,
+                        "Descuento Más Alto (%)": max(porcentajes_lab) if porcentajes_lab else 0.0,
+                        "Descuento Más Bajo (%)": min(porcentajes_lab) if porcentajes_lab else 0.0,
+                        "Último Descuento (%)": ultimo_porc_aplicado,
+                        "Última Act.": ultimo_fecha_lab.strftime("%d-%m-%Y %I:%M %p") if ultimo_fecha_lab else ""
+                    })
+                    
+            if datos_descuentos:
+                df_desc = pd.DataFrame(datos_descuentos)
+                gran_total_desc = df_desc["Total Descuento ($)"].sum()
+                
+                # LÓGICA: Si no hay descuentos este mes, se oculta la columna y la caja del total
+                mostrar_columna_total = gran_total_desc > 0
+                
+                if mostrar_columna_total:
+                    df_desc = df_desc.sort_values(by="Total Descuento ($)", ascending=False)
+                    # Tarjeta de total general
+                    c_dt1, c_dt2 = st.columns([1, 2])
+                    with c_dt1:
+                        st.markdown(f"""<div style="background-color:#14231c; padding:20px; border-radius:10px; border-left:6px solid #10b981; text-align:center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+                            <span style="color:#a3cfbb; font-size:14px; font-weight:bold;">💵 Ahorro Total del Mes</span><br>
+                            <span style="color:#52d681; font-size:36px; font-weight:900;">$ {formato_ve(gran_total_desc)}</span>
+                            </div>""", unsafe_allow_html=True)
+                else:
+                    df_desc = df_desc.sort_values(by="Laboratorio", ascending=True)
+                    df_desc = df_desc.drop(columns=["Total Descuento ($)"])
+                
+                st.divider()
+                st.markdown("#### 🏆 Detalle de descuento por laboratorio")
+                
+                busqueda_desc = st.text_input("🔍 Buscar por Laboratorio:", "", key="search_desc_lab").strip().upper()
+                if busqueda_desc:
+                    df_desc = df_desc[df_desc["Laboratorio"].str.contains(busqueda_desc)]
+                
+                fmt_porc = lambda x: f"{int(round(x))} %"
+                formatters_desc = {
+                    "Descuento Más Alto (%)": fmt_porc,
+                    "Descuento Más Bajo (%)": fmt_porc,
+                    "Último Descuento (%)": fmt_porc
+                }
+                
+                if mostrar_columna_total:
+                    formatters_desc["Total Descuento ($)"] = lambda x: formato_ve(x)
+                
+                if not df_desc.empty:
+                    st.dataframe(estilar_tabla_oscura(df_desc, formatters_desc), use_container_width=True, hide_index=True)
+                    
+                    # --- NUEVA SECCIÓN DE DETALLE POR PROVEEDOR ---
+                    st.divider()
+                    st.markdown("#### 🔍 Detalle de porcentajes por Proveedor")
+                    st.markdown("Selecciona un laboratorio de la lista para ver el desglose de los descuentos que ofreció cada proveedor (si no hubo descuento, se mostrará 0 %).")
+                    
+                    lab_seleccionado = st.selectbox("Selecciona un Laboratorio para ver sus proveedores:", df_desc["Laboratorio"].tolist())
+                    
+                    if lab_seleccionado and lab_seleccionado in detalles_proveedores_dict:
+                        df_provs = pd.DataFrame(detalles_proveedores_dict[lab_seleccionado])
+                        # Se ordena alfabéticamente
+                        df_provs = df_provs.sort_values(by="Proveedor")
+                        
+                        col_t1, col_t2 = st.columns([1, 1])
+                        with col_t1:
+                            st.dataframe(
+                                df_provs.style.set_properties(**{'border': '1px solid #3a3a3a', 'color': '#ffffff', 'background-color': '#111111'}), 
+                                use_container_width=True, 
+                                hide_index=True
+                            )
+                else:
+                    st.warning("⚠️ No se encontraron laboratorios que coincidan con tu búsqueda.")
+            else:
+                st.info(f"💡 No hay laboratorios ni descuentos registrados en el sistema.")
 # ==========================================
 # VISTA 3: CONSOLIDADO TOTAL
 # ==========================================
@@ -1369,8 +1294,8 @@ elif opcion == "Consolidado Total":
     else:
         st.error("Error de conexión con Firebase.")
 
-    # ==========================================
-# VISTA 4: CARGAR COMPARADOR (SOLO SUBIDA)
+# ==========================================
+# VISTA 4: CARGAR COMPARADOR
 # ==========================================
 elif opcion == "Cargar Comparador":
     st.header("☁️ Panel Administrativo: Subir Comparador Maestro")
@@ -1386,50 +1311,30 @@ elif opcion == "Cargar Comparador":
         try:
             bucket = storage.bucket()
             doc_ref = db.collection("configuracion_global").document("comparador_maestro")
-            
             st.divider()
 
-            if "uploader_comp_key" not in st.session_state: 
-                st.session_state.uploader_comp_key = 100
+            if "uploader_comp_key" not in st.session_state: st.session_state.uploader_comp_key = 100
                 
-            uploaded_comp = st.file_uploader(
-                f"Selecciona el archivo actualizado '{nombre_esperado}' (.xlsm)", 
-                type=["xlsm"], 
-                key=f"up_comp_{st.session_state.uploader_comp_key}"
-            )
+            uploaded_comp = st.file_uploader(f"Selecciona el archivo actualizado '{nombre_esperado}' (.xlsm)", type=["xlsm"], key=f"up_comp_{st.session_state.uploader_comp_key}")
 
             if uploaded_comp is not None:
                 nombre_archivo_subido = uploaded_comp.name.upper()
-                
                 if nombre_esperado not in nombre_archivo_subido:
                     st.error(f"❌ Error: El archivo debe llamarse o contener '{nombre_esperado}' en su nombre.")
                 else:
                     st.info(f"✅ Archivo válido listo para subir: {uploaded_comp.name} ({(uploaded_comp.size / (1024*1024)):.2f} MB)")
                     
                     if st.button("🚀 Confirmar y Subir a la Nube", type="primary", use_container_width=True):
-                        with st.spinner("Subiendo archivo pesado a Firebase Storage. Por favor no cierres la ventana..."):
+                        with st.spinner("Subiendo archivo pesado..."):
                             try:
                                 blob = bucket.blob("comparador_maestro/excel_actual.xlsm")
-                                blob.upload_from_string(
-                                    uploaded_comp.getvalue(), 
-                                    content_type="application/vnd.ms-excel.sheet.macroEnabled.12"
-                                )
-                                
-                                doc_ref.set({
-                                    "ultima_actualizacion": hoy_ve.strftime("%d-%m-%Y %I:%M %p")
-                                })
-                                
-                                st.success("🎉 ¡Archivo maestro actualizado con éxito para todo el equipo!")
+                                blob.upload_from_string(uploaded_comp.getvalue(), content_type="application/vnd.ms-excel.sheet.macroEnabled.12")
+                                doc_ref.set({"ultima_actualizacion": hoy_ve.strftime("%d-%m-%Y %I:%M %p")})
+                                st.success("🎉 ¡Archivo maestro actualizado!")
                                 time.sleep(2)
                                 st.session_state.uploader_comp_key += 1
                                 st.rerun()
-                                
-                            except Exception as e:
-                                st.error(f"Ocurrió un error al subir el Excel: {e}")
-                                
-        except Exception as err:
-            st.error(f"Error de configuración con Storage: {err}")
+                            except Exception as e: st.error(f"Ocurrió un error al subir el Excel: {e}")
+        except Exception as err: st.error(f"Error de configuración con Storage: {err}")
     else:
-        st.error("Error de conexión con Firebase. Verifica tus credenciales.")
-    
-
+        st.error("Error de conexión con Firebase.")
